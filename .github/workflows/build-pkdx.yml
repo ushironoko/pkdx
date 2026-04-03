@@ -43,7 +43,9 @@ jobs:
 
       - name: Build
         working-directory: pkdx
-        run: moon build --target native
+        run: |
+          moon update
+          moon build --target native
         shell: bash
 
       - name: Copy binary (Unix)
