@@ -1,10 +1,12 @@
 # Champions SP (Stat Points) システム
 
+**SP は pkdx のデフォルト計算方式。** `--version` 未指定時は Champions SP で計算される。従来の EV/IV 方式は `--version scarlet_violet` 等の deprecated バージョン指定時のみ使用される。
+
 このドキュメントは Pokemon Champions のステータス計算システムを記録する。従来作品の EV/IV とは根本的に異なるため、育成・構築・ダメージ計算で Champions フォーマットを扱う際の一次資料。
 
 ## 1. 背景: EV/IV の廃止
 
-従来のポケモンシリーズでは **EV (努力値, 0-252, 合計510)** と **IV (個体値, 0-31)** の2系統でステータスを制御していた。Champions ではこれらが完全に廃止され、**SP (Stat Points)** に一本化された。
+従来のポケモンシリーズでは **EV (努力値, 0-252, 合計510)** と **IV (個体値, 0-31)** の2系統でステータスを制御していた。Champions ではこれらが完全に廃止され、**SP (Stat Points)** に一本化された。旧バージョン（scarlet_violet, sword_shield 等）の EV/IV 方式は deprecated として維持されるが、デフォルトでは使用されない。
 
 エージェントが持つ従来作品の EV/IV 知識（「252振り」「A252S252」「個体値V」等）を Champions に直接適用してはならない。
 

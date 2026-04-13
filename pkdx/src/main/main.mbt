@@ -334,10 +334,10 @@ fn cmd_write() -> @admiral.CommandDef {
 fn cmd_stat_calc() -> @admiral.CommandDef {
   @admiral.command(
     name="stat-calc",
-    description="Compute Lv50 stats from base + EV/IV + nature",
+    description="Compute Lv50 stats from base + SP + nature (EV/IV for deprecated versions)",
     options=[
-      @admiral.string("ev", description="EVs as 'H,A,B,C,D,S'", default=Some("")),
-      @admiral.string("iv", description="IVs as 'H,A,B,C,D,S' or single value", default=Some("")),
+      @admiral.string("ev", description="SPs as 'H,A,B,C,D,S' (EVs for deprecated versions)", default=Some("")),
+      @admiral.string("iv", description="IVs (deprecated versions only, ignored in Champions)", default=Some("")),
       @admiral.string("nature", description="Nature name (ja)", default=Some("")),
       @admiral.string("nature-up", description="Stat that nature boosts", default=Some("")),
       @admiral.string("nature-down", description="Stat that nature lowers", default=Some("")),
@@ -367,11 +367,11 @@ fn cmd_stat_calc() -> @admiral.CommandDef {
 fn cmd_stat_reverse() -> @admiral.CommandDef {
   @admiral.command(
     name="stat-reverse",
-    description="Reverse-derive base stat (single mode) or EV spread (pokemon mode)",
+    description="Reverse-derive base stat (single mode) or SP/EV spread (pokemon mode)",
     options=[
       @admiral.string("stats", description="Actual stats 'H,A,B,C,D,S' (pokemon mode)", default=Some("")),
-      @admiral.int("iv", description="IV", default=Some(31)),
-      @admiral.int("ev", description="EV", default=Some(0)),
+      @admiral.int("iv", description="IV (deprecated versions only, ignored in Champions)", default=Some(31)),
+      @admiral.int("ev", description="SP or EV (deprecated versions)", default=Some(0)),
       @admiral.string("nature", description="Nature mod: up|down|neutral", default=Some("neutral")),
       @admiral.bool("hp", description="Treat target as HP stat (single mode)"),
       version_option(),
@@ -422,10 +422,10 @@ fn cmd_init_cache() -> @admiral.CommandDef {
 fn cmd_hbd() -> @admiral.CommandDef {
   @admiral.command(
     name="hbd",
-    description="Optimize H/B/D EV spread under HBD/(p*B+s*D) objective",
+    description="Optimize H/B/D SP spread under HBD/(p*B+s*D) objective (EV for deprecated versions)",
     options=[
-      @admiral.string("fixed-ev", description="Fixed EVs 'H,A,B,C,D,S' (_ to optimize)", default=Some("")),
-      @admiral.string("iv", description="IVs as 'H,A,B,C,D,S' or single value", default=Some("")),
+      @admiral.string("fixed-ev", description="Fixed SPs 'H,A,B,C,D,S' (_ to optimize) (EVs for deprecated versions)", default=Some("")),
+      @admiral.string("iv", description="IVs (deprecated versions only, ignored in Champions)", default=Some("")),
       @admiral.string("nature", description="Nature name (ja)", default=Some("")),
       @admiral.string("nature-up", description="Stat that nature boosts", default=Some("")),
       @admiral.string("nature-down", description="Stat that nature lowers", default=Some("")),

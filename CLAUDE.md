@@ -150,14 +150,14 @@ bin/pkdx type-chart "じめん" "ひこう,はがね"
 # 攻撃範囲カバー率
 bin/pkdx coverage "ほのお,みず,くさ"
 
-# 実数値計算（種族値+努力値+性格→Lv50実数値）
-bin/pkdx stat-calc "ガブリアス" --ev "0,252,0,0,4,252" --nature "ようき" --format json
-bin/pkdx stat-calc "ガブリアス" --ev "0,252,0,0,4,252" --nature-up S --nature-down C
+# 実数値計算（デフォルト: Champions SP。--ev は SP として解釈される）
+bin/pkdx stat-calc "ガブリアス" --ev "0,32,0,0,0,32" --nature "ようき" --format json
+bin/pkdx stat-calc "ガブリアス" --ev "0,32,0,0,0,32" --nature-up S --nature-down C
 
 # 逆算: 実数値→必要な種族値を逆引き（単一値モード）
-bin/pkdx stat-reverse 130 --iv 31 --ev 252 --nature up
-# 逆算: ポケモン名+実数値6種→努力値を逆引き（ポケモンモード）
-bin/pkdx stat-reverse "ガブリアス" --stats "183,200,115,90,106,169" --iv 31
+bin/pkdx stat-reverse 130 --ev 32 --nature up
+# 逆算: ポケモン名+実数値6種→SP配分を逆引き（ポケモンモード）
+bin/pkdx stat-reverse "ガブリアス" --stats "183,182,115,90,105,169"
 
 # キャッシュ雛形生成（skillがPhase 0で呼び出す。JSONスキーマ由来のプレースホルダを出力）
 bin/pkdx init-cache team     > box/cache/team_cache_xxx.json
@@ -169,10 +169,17 @@ cat box/cache/team_cache_ガブリアス_*.json | bin/pkdx write teams --date 20
 # 育成データ保存（skillキャッシュJSON→box/pokemons/にmd出力）
 cat box/cache/breed_cache_ガブリアス_*.json | bin/pkdx write pokemon --name "ガブリアス" --file "スカーフ型"
 
-# 耐久指数最適化（H/B/D の EV を最適化、HP条件・火力比重・top-N 対応）
+# 耐久指数最適化（デフォルト: Champions SP。予算66、各上限32）
 bin/pkdx hbd "ガブリアス" --nature ようき
-bin/pkdx hbd "ガブリアス" --nature ようき --fixed-ev "_,0,_,0,_,252" --hp-snap leftovers
+bin/pkdx hbd "ガブリアス" --nature ようき --fixed-ev "_,0,_,0,_,32" --hp-snap leftovers
 bin/pkdx hbd "カビゴン" --nature ずぶとい --phys-weight 2 --spec-weight 1 --top 5
+
+### Deprecated (scarlet_violet 等の旧バージョン)
+
+# 旧バージョンでは --ev は努力値、--iv は個体値として解釈される
+bin/pkdx stat-calc "ガブリアス" --ev "0,252,0,0,4,252" --nature "ようき" --version scarlet_violet
+bin/pkdx stat-reverse "ガブリアス" --stats "183,200,115,90,106,169" --iv 31 --version scarlet_violet
+bin/pkdx hbd "ガブリアス" --nature ようき --fixed-ev "_,0,_,0,_,252" --version scarlet_violet
 ```
 
 ## Reference documents

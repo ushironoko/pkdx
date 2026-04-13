@@ -347,13 +347,18 @@ pub fn optimize_hbd_champions(
   for i = 0; i < 6; i = i + 1 {
     sps[i] = if fixed_sps[i] >= 0 { fixed_sps[i] } else { 0 }
   }
-  // Snap pre-adjustment
+  // Snap pre-adjustment — must respect remaining budget after fixed slots
   if not(h_fixed) && snap != @model.HpSnap::NoSnap {
     let h0 = calc_hp_champions(pokemon.hp, sps[0])
     if not(@model.matches_snap(h0, snap)) {
       let target = next_snap_hp(h0 - 1, snap)
       let needed = sp_for_hp_champions(pokemon.hp, target)
-      if needed <= 32 {
+      let mut fixed_used = 0
+      for i = 0; i < 6; i = i + 1 {
+        fixed_used = fixed_used + sps[i]
+      }
+      let remaining = 66 - fixed_used
+      if needed <= 32 && needed - sps[0] <= remaining {
         sps[0] = needed
       }
     }

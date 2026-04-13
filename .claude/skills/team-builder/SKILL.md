@@ -459,12 +459,16 @@ AskUserQuestionで素早さ枠の方針を確認。
 3. 推奨持ち物を提案（既使用持ち物を除外。スカーフ枠ならこだわりスカーフを優先提案）
 4. AskUserQuestionで持ち物を確定
 
-### 5-6: 耐久重視ポケモンのEV最適化
+### 5-6: 耐久重視ポケモンのSP/EV最適化
 
-耐久寄りのポケモン（HP/防御型アタッカー、壁役、受けポケ等）にEVを振る際は、`pkdx hbd` で総合耐久指数 HBD/(B+D) を最大化する配分を自動算出できる。S振りを固定して残りを H/B/D に最適配分:
+耐久寄りのポケモン（HP/防御型アタッカー、壁役、受けポケ等）にSPを振る際は、`pkdx hbd` で総合耐久指数 HBD/(B+D) を最大化する配分を自動算出できる。S振りを固定して残りを H/B/D に最適配分:
 
 ```bash
-$PKDX hbd "<name>" --nature "<nature>" --fixed-ev "_,0,_,0,_,<S_ev>" [--hp-snap leftovers|residual|sitrus|lifeorb] [--phys-weight P] [--spec-weight S] [--top N]
+# デフォルト (Champions SP): 予算66、各上限32
+$PKDX hbd "<name>" --nature "<nature>" --fixed-ev "_,0,_,0,_,<S_sp>"
+
+# Deprecated版: --version scarlet_violet 指定時は EV として解釈（予算508、各上限252）
+$PKDX hbd "<name>" --nature "<nature>" --fixed-ev "_,0,_,0,_,<S_ev>" --version scarlet_violet
 ```
 
 - `--hp-snap leftovers`: たべのこし持ちは 16n+1（H ≡ 1 mod 16）
@@ -472,7 +476,7 @@ $PKDX hbd "<name>" --nature "<nature>" --fixed-ev "_,0,_,0,_,<S_ev>" [--hp-snap 
 - `--phys-weight P --spec-weight S`: 物理/特殊のメタを反映した非対称重み（例: 物理多なら `--phys-weight 2`）
 - `--top N`: 上位 N 候補を比較（微差の配分を選択）
 
-アルゴリズムの詳細・H=B+D の導出・11n調整との関係は `.claude/skills/team-builder/references/bulk_theory.md` を参照。
+アルゴリズムの詳細・H=B+D の導出・11n調整との関係は `.claude/skills/team-builder/references/bulk_theory.md` を参照。SP システムの詳細は `.claude/skills/team-builder/references/champions_sp.md` を参照。
 
 ---
 
@@ -679,13 +683,14 @@ CLIはキャッシュ JSON のスキーマ（`members` + `coverage` + `defense_m
 {ポケモン名} / {特性} / {持ち物}
 {技1} / {技2} / {技3} / {技4}
 実数値: {HP}-{攻撃}-{防御}-{特攻}-{特防}-{素早さ}
-努力値: {HP}-{攻撃}-{防御}-{特攻}-{特防}-{素早さ}
+SP: {HP}-{攻撃}-{防御}-{特攻}-{特防}-{素早さ}
 性格: {性格名}
 ```
 
 **注意事項**:
-- 実数値・努力値・性格はbreedスキルで育成データが確定している場合のみ記載。未確定の場合は `実数値: 未設定` / `努力値: 未設定` / `性格: 未設定` と記載
-- `box/pokemons/<name>/` 配下にbreedスキルの出力ファイルが存在する場合、そこから実数値・努力値・性格を読み取る
+- Champions では「SP」、deprecated バージョンでは「努力値」と表記する
+- 実数値・SP・性格はbreedスキルで育成データが確定している場合のみ記載。未確定の場合は `実数値: 未設定` / `SP: 未設定` / `性格: 未設定` と記載
+- `box/pokemons/<name>/` 配下にbreedスキルの出力ファイルが存在する場合、そこから実数値・SP・性格を読み取る
 - 技はPhase 8のレポートで推奨した4技を使用
 
 ---
