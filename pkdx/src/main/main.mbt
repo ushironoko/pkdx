@@ -130,6 +130,7 @@ fn build_cli() -> @admiral.CliApp {
       cmd_stat_reverse(),
       cmd_init_cache(),
       cmd_hbd(),
+      cmd_learners(),
     ],
   )
 }
@@ -552,6 +553,62 @@ fn run_search(
           results
         }
         println(@cli.format_search(filtered, format))
+      }
+      Err(e) => println("Error: " + e)
+    }
+  })
+}
+
+///|
+fn cmd_learners() -> @admiral.CommandDef {
+  @admiral.command(
+    name="learners",
+    description="List Pokemon that can learn a given move",
+    options=[
+      version_option(),
+      regulation_option(),
+      format_option(),
+      @admiral.int("limit", description="Max results (default 50)", default=Some(50)),
+    ],
+    positionals=[
+      @admiral.positional(
+        "move",
+        description="Move name (ja)",
+        required=true,
+      ),
+    ],
+    run=Some(fn(ctx) {
+      run_learners(
+        ctx_str(ctx, "move"),
+        ctx_int(ctx, "limit"),
+        ctx_game(ctx),
+        ctx_format(ctx),
+      )
+    }),
+  )
+}
+
+///|
+fn run_learners(
+  move_name : String,
+  limit : Int,
+  game : GameContext,
+  format : @cli.OutputFormat,
+) -> Unit {
+  with_db(fn(db) {
+    match @db.query_learners(db, move_name, game.version) {
+      Ok(results) => {
+        let filtered = if game.regulation != "" {
+          results.filter(fn(p) { @db.is_available(p.global_no, game.regulation) })
+        } else {
+          results
+        }
+        let limited = if limit > 0 && filtered.length() > limit {
+          filtered[:limit].to_array()
+        } else {
+          filtered
+        }
+        println(@cli.format_search(limited, format))
       }
       Err(e) => println("Error: " + e)
     }

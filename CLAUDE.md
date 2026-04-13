@@ -99,6 +99,7 @@ pokedex/                  # git submodule (towakey/pokedex)
 - `local_waza*` / `local_pokedex_waza*` テーブルの `version` は Mixed Case（`Scarlet_Violet`）— pkdx 内部で自動変換
 - タイプ名は日本語（`ほのお`, `みず` 等）
 - `globalNo` はゼロ埋め4桁（`0445`）— pkdx は入力を自動正規化
+- `pkdx_patch/` 配下にパッチマイグレーションがあり、`setup.sh` の Step 2.5 で自動適用される。Champions フォーマット等 pokedex submodule に含まれないデータはここで追加される。パッチは冪等（`pkdx_migrations` テーブルで適用済み管理）
 
 ## Version Management
 
@@ -124,6 +125,10 @@ bin/pkdx moves "ガブリアス" --version scarlet_violet --format json
 
 # タイプ検索（タイプ名は日本語、最低素早さ指定可）
 bin/pkdx search --type "ドラゴン" --min-speed 100 --version scarlet_violet
+
+# 技の逆引き（技名→覚えるポケモン一覧、デフォルト50件）
+bin/pkdx learners "じしん" --version scarlet_violet
+bin/pkdx learners "じしん" --version scarlet_violet --limit 10 --format json
 
 # ダメージ計算（特性・持ち物・天候・ランク補正等はオプション）
 bin/pkdx damage "ガブリアス" "サーフゴー" "じしん" \
