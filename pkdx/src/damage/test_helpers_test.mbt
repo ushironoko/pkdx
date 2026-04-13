@@ -98,6 +98,7 @@ fn mk_damage_input(
   weather? : @model.Weather = @model.Weather::None,
   field? : @model.Field = @model.Field::None,
   tera_type? : String = "",
+  fainted_count? : Int = 0,
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -116,5 +117,6 @@ fn mk_damage_input(
     def_hp_override,
     atk_rank,
     def_rank,
+    fainted_count,
   }
 }

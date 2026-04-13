@@ -16,4 +16,5 @@ pub(all) struct DamageCalcInput {
   def_hp_override : Int
   atk_rank : Int
   def_rank : Int
+  fainted_count : Int
 } derive(Show)

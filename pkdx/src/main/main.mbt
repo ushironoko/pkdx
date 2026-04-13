@@ -257,6 +257,7 @@ fn cmd_damage() -> @admiral.CommandDef {
       @admiral.int("def-hp", description="Override defender HP", default=Some(0)),
       @admiral.int("atk-rank", description="Attacker stat stage (-6..+6). For Body Press this is the Defense stage", default=Some(0)),
       @admiral.int("def-rank", description="Defender stat stage (-6..+6)", default=Some(0)),
+      @admiral.int("fainted-count", description="Number of fainted allies (0-5, for Supreme Overlord/そうだいしょう)", default=Some(2)),
     ],
     positionals=[
       @admiral.positional("attacker", description="Attacker Pokemon name", required=true),
@@ -288,6 +289,7 @@ fn cmd_damage() -> @admiral.CommandDef {
         ctx_int(ctx, "def-hp"),
         ctx_int(ctx, "atk-rank"),
         ctx_int(ctx, "def-rank"),
+        ctx_int(ctx, "fainted-count"),
       )
     }),
   )
@@ -576,6 +578,7 @@ fn run_damage(
   def_hp : Int,
   atk_rank : Int,
   def_rank : Int,
+  fainted_count : Int,
 ) -> Unit {
   if atk_rank < -6 || atk_rank > 6 {
     println("Error: --atk-rank must be in [-6, 6]")
@@ -624,6 +627,7 @@ fn run_damage(
       def_hp_override: def_hp,
       atk_rank,
       def_rank,
+      fainted_count,
     }
     let result = @damage.calc_damage(input)
     println(@cli.format_damage(result, input, format))

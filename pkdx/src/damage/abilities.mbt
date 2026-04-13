@@ -204,7 +204,11 @@ pub fn get_stab_mult(ability : String) -> Int {
 
 ///|
 /// Get attacker ability final modifier (4096 base). Returns 0 if not applicable.
-pub fn get_atk_ability_final(ability : String, move_type : String) -> Int {
+pub fn get_atk_ability_final(
+  ability : String,
+  move_type : String,
+  fainted_count : Int,
+) -> Int {
   match ability {
     "トランジスタ" => if move_type == "でんき" { 5325 } else { 0 }
     "りゅうのあぎと" =>
@@ -220,6 +224,24 @@ pub fn get_atk_ability_final(ability : String, move_type : String) -> Int {
         0
       }
     "ちからずく" | "アナライズ" => 5325
+    "そうだいしょう" => {
+      let count = if fainted_count < 0 {
+        0
+      } else if fainted_count > 5 {
+        5
+      } else {
+        fainted_count
+      }
+      // 4096ベース: 1→x1.1(4506), 2→x1.2(4915), 3→x1.3(5325), 4→x1.4(5734), 5→x1.5(6144)
+      match count {
+        1 => 4506
+        2 => 4915
+        3 => 5325
+        4 => 5734
+        5 => 6144
+        _ => 0
+      }
+    }
     _ => 0
   }
 }

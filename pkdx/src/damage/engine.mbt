@@ -161,6 +161,12 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   // 3. Power calculation
   let mut effective_power = move_power
 
+  // おはかまいり: 基礎威力50 + 味方瀕死回数×50（最大100回=5050）
+  if move_name == "おはかまいり" {
+    let count = if input.fainted_count > 100 { 100 } else { input.fainted_count }
+    effective_power = 50 + count * 50
+  }
+
   // 体重参照技は固定威力を上書きする（後続のテクニシャン等の補正は通常通り乗る）。
   if move_name == "けたぐり" || move_name == "くさむすび" {
     let dw = effective_weight(dfn.weight, def_ability)
@@ -301,7 +307,7 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
 
     // Attacker ability final
     if atk_ability.length() > 0 {
-      let a_mod = get_atk_ability_final(atk_ability, move_type)
+      let a_mod = get_atk_ability_final(atk_ability, move_type, input.fainted_count)
       if a_mod > 0 {
         dmg = round5(dmg, a_mod)
       }
