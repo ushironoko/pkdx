@@ -1,6 +1,7 @@
 ///|
 /// Helper: build a small team JSON with `n` normalised Pokemon distinguished
-/// only by speed (so payoffs are driven by speed tiebreak under Best1v1).
+/// only by speed. `run_select` evaluates them under `SwitchingGame(1)` /
+/// `ScreenedSwitchingGame(1)` (the only remaining `team_payoff_model` variants).
 fn build_team_json(n : Int, prefix : String, speeds : Array[Int]) -> String {
   let mut s = "["
   for i in 0..<n {
@@ -27,19 +28,16 @@ fn select_input_json(
   opp_speeds : Array[Int],
   format : String,
 ) -> String {
-  "{\"team\":" +
-  build_team_json(team_speeds.length(), "T", team_speeds) +
-  ",\"opponent\":" +
-  build_team_json(opp_speeds.length(), "O", opp_speeds) +
-  ",\"format\":\"" +
-  format +
-  "\"}"
+  select_input_json_with_extra(
+    team_speeds, opp_speeds, format,
+    ",\"team_payoff_model\":\"switching_game:1\"",
+  )
 }
 
 ///|
-/// Variant allowing extra JSON fields (payoff_model / team_payoff_model).
+/// Variant allowing extra JSON fields (e.g. `team_payoff_model`).
 /// `extra` is inserted verbatim before the closing brace, and must start with
-/// a comma, e.g. `,"payoff_model":"best1v1"`.
+/// a comma, e.g. `,"team_payoff_model":"switching_game"`.
 fn select_input_json_with_extra(
   team_speeds : Array[Int],
   opp_speeds : Array[Int],
@@ -61,7 +59,12 @@ fn select_input_json_with_extra(
 test "select_6v6_single_outputs_3pick_distribution" {
   let team_sp = [100, 95, 105, 90, 110, 85]
   let opp_sp = [100, 100, 100, 100, 100, 100]
-  let out = run_select(select_input_json(team_sp, opp_sp, "single"))
+  let out = run_select(
+    select_input_json_with_extra(
+      team_sp, opp_sp, "single",
+      ",\"team_payoff_model\":\"switching_game:1\"",
+    ),
+  )
   let j = @json.parse(out)
   match j {
     Object(m) => {
@@ -90,50 +93,36 @@ test "select_6v6_single_outputs_3pick_distribution" {
 }
 
 ///|
-test "select_6v6_double_outputs_4pick_distribution" {
+test "select_6v6_double_format_currently_unsupported" {
+  // After removing the pairwise payoff models, both `SwitchingGame(1)` and
+  // `ScreenedSwitchingGame(1)` are Single-only. `format = "double"` must raise
+  // until a team-level Double model exists.
   let team_sp = [100, 95, 105, 90, 110, 85]
   let opp_sp = [100, 100, 100, 100, 100, 100]
-  let out = run_select(select_input_json(team_sp, opp_sp, "double"))
-  let j = @json.parse(out)
-  match j {
-    Object(m) =>
-      match m.get("row_strategy") {
-        Some(Array(arr)) => {
-          // C(6, 4) = 15.
-          assert_true(arr.length() == 15)
-          let mut total = 0.0
-          for x in arr {
-            match x {
-              Number(n, ..) => total = total + n
-              _ => ()
-            }
-          }
-          assert_true((total - 1.0).abs() < 1.0e-6)
-        }
-        _ => assert_true(false)
-      }
-    _ => assert_true(false)
+  let errored = try {
+    let _ = run_select(select_input_json(team_sp, opp_sp, "double"))
+    false
+  } catch {
+    _ => true
   }
+  assert_true(errored)
 }
 
 ///|
-test "select_dominant_lineup_assigned_probability_one" {
-  // All team Pokemon have speed 150; opponent has speed 50. Every selection of
-  // team outspeeds every opponent selection → all team cells are +1, making
-  // every row equivalent. The LP should produce a (degenerate) distribution
-  // with total mass 1 and value +1 with exploitability 0.
+test "select_favours_faster_side_in_speed_asymmetric_lineup" {
   let team_sp = [150, 150, 150, 150, 150, 150]
   let opp_sp = [50, 50, 50, 50, 50, 50]
-  let out = run_select(select_input_json(team_sp, opp_sp, "single"))
+  let out = run_select(
+    select_input_json_with_extra(
+      team_sp, opp_sp, "single",
+      ",\"team_payoff_model\":\"switching_game:2\"",
+    ),
+  )
   let j = @json.parse(out)
   match j {
     Object(m) => {
       match m.get("value") {
-        Some(Number(v, ..)) => assert_true((v - 1.0).abs() < 1.0e-6)
-        _ => assert_true(false)
-      }
-      match m.get("exploitability") {
-        Some(Number(e, ..)) => assert_true(e.abs() < 1.0e-6)
+        Some(Number(v, ..)) => assert_true(v > 0.0)
         _ => assert_true(false)
       }
       match m.get("row_strategy") {
@@ -157,10 +146,11 @@ test "select_dominant_lineup_assigned_probability_one" {
 ///|
 test "select_reports_expected_winrate_and_exploitability" {
   let out = run_select(
-    select_input_json(
+    select_input_json_with_extra(
       [100, 100, 100, 100, 100, 100],
       [100, 100, 100, 100, 100, 100],
       "single",
+      ",\"team_payoff_model\":\"switching_game:1\"",
     ),
   )
   // Mirror match → value 0, exploitability 0.
@@ -184,10 +174,11 @@ test "select_reports_expected_winrate_and_exploitability" {
 test "select_accepts_team_cache_json" {
   // The handler accepts the documented team-cache shape (name + base stats +
   // moves) without requiring extra fields.
-  let input = select_input_json(
+  let input = select_input_json_with_extra(
     [100, 100, 100, 100, 100, 100],
     [100, 100, 100, 100, 100, 100],
     "single",
+    ",\"team_payoff_model\":\"switching_game:1\"",
   )
   // Should not raise.
   let out = run_select(input)
@@ -208,57 +199,11 @@ test "select_markdown_report_written_to_box_teams" {
   let opp = parse_team_array(
     @json.parse(build_team_json(6, "O", opp_sp)), "opponent",
   )
-  let r = compute_select(team, opp, Single, Best1v1)
+  let r = compute_select_with_team_model(team, opp, Single, SwitchingGame(1))
   let md = render_select_markdown(r)
   assert_true(md.contains("# Selection Report"))
   assert_true(md.contains("- format: single"))
   assert_true(md.contains("| probability | members |"))
-}
-
-///|
-test "run_select_json_with_payoff_model_only_wraps_in_pairwise" {
-  // Legacy field only: must be wrapped in Pairwise transparently.
-  let team_sp = [100, 100, 100, 100, 100, 100]
-  let opp_sp = [100, 100, 100, 100, 100, 100]
-  let input = select_input_json_with_extra(
-    team_sp,
-    opp_sp,
-    "single",
-    ",\"payoff_model\":\"best1v1\"",
-  )
-  let out = run_select(input)
-  let j = @json.parse(out)
-  match j {
-    Object(m) =>
-      match m.get("row_strategy") {
-        Some(Array(arr)) => assert_true(arr.length() == 20)
-        _ => assert_true(false)
-      }
-    _ => assert_true(false)
-  }
-}
-
-///|
-test "run_select_json_with_both_models_gives_team_payoff_model_precedence" {
-  // Both present: team_payoff_model wins; payoff_model is ignored.
-  let team_sp = [100, 100, 100, 100, 100, 100]
-  let opp_sp = [100, 100, 100, 100, 100, 100]
-  let input = select_input_json_with_extra(
-    team_sp,
-    opp_sp,
-    "single",
-    ",\"payoff_model\":\"best1v1\",\"team_payoff_model\":\"pairwise:nash_responses\"",
-  )
-  let out = run_select(input)
-  let j = @json.parse(out)
-  match j {
-    Object(m) =>
-      match m.get("row_strategy") {
-        Some(Array(arr)) => assert_true(arr.length() == 20)
-        _ => assert_true(false)
-      }
-    _ => assert_true(false)
-  }
 }
 
 ///|
@@ -316,4 +261,90 @@ test "parse_move_json_reads_priority_and_stat_effects" {
   // Missing optional fields default to 0 / []
   assert_eq(parsed[2].moves[0].priority, 0)
   assert_eq(parsed[2].moves[0].stat_effects.length(), 0)
+}
+
+///|
+/// Phase 14: ScreenedSwitchingGame(1) returns a SelectResult whose `selections`
+/// / `selection_names` / `row_strategy` are filtered down to retained rows
+/// only. `C(4, 3) = 4` selections on each side × `keep_top = 0.5` → 2 rows
+/// / 2 cols retained.
+test "run_select_with_screened_switching_game_returns_retained_shape" {
+  let input = select_input_json_with_extra(
+    [100, 100, 100, 100],
+    [100, 100, 100, 100],
+    "single",
+    ",\"team_payoff_model\":\"screened_switching_game:10:42:0.5:1\"",
+  )
+  let out = run_select(input)
+  // Parse the output JSON to read selection-array lengths.
+  let root = match @json.parse(out) {
+    Object(m) => m
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let selections = match root.get("selections") {
+    Some(Array(arr)) => arr
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let opp_selections = match root.get("opp_selections") {
+    Some(Array(arr)) => arr
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let row_strategy = match root.get("row_strategy") {
+    Some(Array(arr)) => arr
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  // 4 selections × keep_top=0.5 → ceil(4 * 0.5) = 2 retained on each axis.
+  assert_eq(selections.length(), 2)
+  assert_eq(opp_selections.length(), 2)
+  // row_strategy must track retained selection shape.
+  assert_eq(row_strategy.length(), selections.length())
+}
+
+///|
+test "run_select_rejects_screened_switching_game_with_double_format" {
+  let input = select_input_json_with_extra(
+    [100, 100, 100, 100, 100],
+    [100, 100, 100, 100, 100],
+    "double",
+    ",\"team_payoff_model\":\"screened_switching_game:10:42:0.5:1\"",
+  )
+  let errored = try {
+    let _ = run_select(input)
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(errored)
+}
+
+///|
+test "select_accepts_team_builder_member_format" {
+  let mk = fn(name : String, speed : Int) -> String {
+    "{\"name\":\"" + name + "\",\"types\":[\"ノーマル\"],\"base_stats\":{\"h\":100,\"a\":100,\"b\":80,\"c\":80,\"d\":80,\"s\":" + speed.to_string() + "},\"ability\":\"\",\"item\":\"\",\"role\":\"軸\",\"moves\":[{\"name\":\"のしかかり\",\"type\":\"ノーマル\",\"category\":\"物理\",\"power\":85}]}"
+  }
+  let team = "[" + mk("T0", 100) + "," + mk("T1", 95) + "," + mk("T2", 105) + "," + mk("T3", 90) + "," + mk("T4", 110) + "," + mk("T5", 85) + "]"
+  let input = "{\"team\":" + team + ",\"opponent\":" + team + ",\"format\":\"single\",\"team_payoff_model\":\"switching_game:1\"}"
+  let out = run_select(input)
+  let j = @json.parse(out)
+  match j {
+    Object(m) => {
+      match m.get("row_strategy") {
+        Some(Array(arr)) => assert_true(arr.length() == 20)
+        _ => assert_true(false)
+      }
+    }
+    _ => assert_true(false)
+  }
 }

@@ -1,121 +1,26 @@
-# PayoffModel 仕様と選択基準
+# TeamPayoffModel 仕様と選択基準
 
-`pkdx select` や `pkdx nash solve` (characters 形式以外) で利得を damage 計算から作る際の選択肢。実装は `src/payoff/from_damage.mbt` (`winrate`, `best1v1_winrate`, `nash_responses_winrate`)。
+`pkdx select` が受け取る `team_payoff_model` の選択肢と設計根拠。旧 pairwise 系 (`Best1v1` / `NashResponses` / `MonteCarloSim(pairwise)`) は 2026-04 に全廃し、team-level の 2 択に統一した。
 
 ## 共通仕様
 
-- 返り値は `[0, 1]` の winrate。最終行列 `A[i, j] = 2·winrate(i, j) − 1 ∈ [-1, +1]`
-- 決定論的モデル (`Best1v1` / `NashResponses`) では `A[i, j] + A[j, i] = 0` が厳密に成立 (定義から自動保証)
-- 確率的モデル (`MonteCarloSim`) では `from_combatants` 内で**上三角推定 + 対称補完** (`A[j, i] = -A[i, j]`) を強制し、有限試行ノイズで反対称性が崩れるのを防ぐ
-- 対角は常に 0 (同一の自己対戦 → 速度タイ → 0.5 → payoff 0)
+- すべて team-level (選出 3v3 を直接評価するモデルのみ)
+- 戻り値は `[-1, +1]` (own 視点の Nash value)
+- Single 専用 (3 体選出)。Double は現時点で未対応
+- `damage_utils.mbt` は公開 API を持たず、`avg_damage` / `build_input_with_ranks` の内部ヘルパーのみ残存
 
-## Best1v1 (既定)
-
-### 計算アルゴリズム
-
-```
-ta = min over a.moves of (defender_hp / avg_damage(a → b using move))
-tb = min over b.moves of (attacker_hp / avg_damage(b → a using move))
-
-if ta < tb:       winrate = 1.0
-elif ta > tb:     winrate = 0.0
-elif ta = ∞:      winrate = 0.5   # 両者とも通らない
-elif a.spe > b.spe: winrate = 1.0
-elif a.spe < b.spe: winrate = 0.0
-else:             winrate = 0.5
-```
-
-- `avg_damage`: 16-roll の算術平均 (immune は 0)
-- `turns_to_ko`: `defender_hp / avg_damage`、ダメージ 0 なら `+∞`
-
-### 意図と限界
-
-**意図**: 速くて分かりやすく、多くの対面で「結局これで勝つか負けるか」の近似として機能する。
-
-**限界**:
-- 交代・状態異常・フィールド等を無視
-- 耐久技・回復技を考慮しない (ダメージ 0 なら勝てない扱い)
-- 混合戦略 (技選択のランダム化) を許容しない
-
-**使いどころ**: 使用率ベースのメタ分析、選出最適化の高速計算 (6v6 → 20×20 行列が数ミリ秒)。
-
-## NashResponses
-
-### 計算アルゴリズム
-
-各対面 (i, j) について、a の技 × b の技の内部 |moves_a| × |moves_b| 行列を作り、ゼロ和 Nash を解いた値を `A[i, j]` とする:
-
-```
-inner[k, l] = encode(turns_to_ko(a, b, a.moves[k]), turns_to_ko(b, a, b.moves[l]), speed)
-            ∈ {-1, 0, +1}
-A[i, j] = (Nash_value(inner) + 1) / 2 - 0.5   # rescaled
-```
-
-### 意図と限界
-
-**意図**: 技選択の commitment problem を明示的にモデル化。「A は強い技だが B のカウンターに弱い」といった循環が内部に含まれる場合、単純な最良応答選択 (Best1v1) では得られない戦略的価値を計算できる。
-
-**限界**:
-- 計算量: 6v6 で 36 小 Nash × 20 選出対 = 非自明に重い
-- 技の外にある動作 (交代、持ち物発動、テラスタル) は依然考慮しない
-- 内部 Nash の判定も ±1/0 の離散化 → 中間 (ダメージ量の僅差) は粗い
-
-**使いどころ**: 行列内に循環が明らかな構成 (例: みず vs くさ vs ほのお 型の 3 タイプ技)、技選択が勝敗を決する特殊な構築。
-
-## MonteCarloSim (Phase 12)
+## SwitchingGame (TeamPayoffModel)
 
 ### enum
 
 ```moonbit
-MonteCarloSim(trials: Int, seed: UInt64)
-```
-
-### 計算アルゴリズム
-
-`@moonbitlang/core/random` の `Rand::chacha8` で seeded RNG を作成。N trials × turn loop:
-
-1. 各側が `rollout_pick_move` (ε-greedy) で技を選択。ε=`default_rollout_epsilon = 0.1` の確率で全 move から一様、残りの確率で `pick_best_move` (power > 0 の中で平均ダメージ最大)。変化技も ε で非ゼロ確率で標本化される
-2. 先攻決定: `turn_order_sign(a, 優先度_a, Spe_a, b, 優先度_b, Spe_b)`。優先度は `move.priority` を参照、素早さ同値は RNG coin flip
-3. 優先度順逐次解決:
-   - 先攻 → 選ばれた技が power > 0 なら 16-roll table から `rng.int(limit=16)` でサンプル → defender HP 減算。power = 0 (status) の場合は damage なし
-   - defender HP > 0 なら後攻も同様に行動
-4. HP=0 で勝者確定 (1.0 / 0.0)、200 turn 上限で 0.5 (draw)
-5. trials 回累積 → `winrate = total / trials ∈ [0, 1]`
-
-### Seed 仕様
-
-`Rand::chacha8(seed: Bytes)` は **32-byte seed 固定** (MoonBit core の既知仕様、それ以外で abort)。`seed_to_bytes` は UInt64 を下位 8 byte little-endian + 0 padding 24 byte で 32 byte に詰める。
-
-### 意図と限界
-
-**意図**: ダメージ乱数を陽に取り込んだ確率モデル。Best1v1 の三値 (0/0.5/1) より細かい連続値で、近接対面の優劣を粒度高く表現。
-
-**限界**:
-- 変化技で拾える効果は `MoveMeta.stat_effects` に登録された自己ランク補正のみ (つるぎのまい / りゅうのまい等)。状態異常 / 天候 / フィールド変化 / 交代・ひるみ系の副次効果はまだ反映しない
-- 特性発動・テラスタルは計算しない
-- ε-greedy で変化技がサンプルされた場合、登録済みの積み技はランクに反映され次ターン以降のダメージが上がる。登録なしの変化技は「1 ターン相手のみ進行」として winrate に影響する
-- turn_limit=200 を超える長期戦は draw 扱い
-- 各 trial 独立サンプルなので有限試行ノイズあり (zero-sum 補完で対称性のみは保証)
-- ε が大きすぎると変化技の偶発選択が winrate を潰すリスクあり。デフォルト 0.1 は実戦的バランスで、必要に応じて simulate_battle の `epsilon` 引数で調整可能
-
-**使いどころ**: Best1v1 / NashResponses が三値で潰れる対面 (火力拮抗・ダメージ範囲が広い) の優劣判定。trials を増やすほど誤差は減るが、6v6 で C(6,3)² = 400 セルの上三角だと cell あたり trials 回 → 慎重に。
-
-### CLI 文字列
-
-`"monte_carlo:<trials>:<seed>"`。例: `"monte_carlo:1000:42"`。`trials > 0` 必須、`seed` は UInt64 (10 進文字列)。
-
-## SwitchingGame (Phase 13, TeamPayoffModel)
-
-### enum (新軸)
-
-```moonbit
 TeamPayoffModel {
-  Pairwise(PayoffModel)    // Phase 0-12 互換
-  SwitchingGame(Int)       // turn_limit
+  SwitchingGame                                       // DP turn_limit = DP_TURN_LIMIT (20)
+  ScreenedSwitchingGame(Int, UInt64, Double)          // trials, seed, keep_top (MC turn_limit = MC_TURN_LIMIT (5), DP = 20)
 }
 ```
 
-`PayoffModel` 拡張ではなく**別軸の enum**。pairwise 対面ごとに winrate を計算する既存ロジックは `Pairwise(...)` でラップ、SwitchingGame は team-level の extensive-form ゲーム木として独立に評価する。
+turn_limit は定数化: DP = 20 (3 体選出の最短決着 3 ターン以上を十分カバー)、MC screening rollout = 5 (足切り用の粗い評価)。team-level の extensive-form ゲーム木として評価する。
 
 ### 状態空間
 
@@ -127,7 +32,7 @@ SwitchingGameState {
   opp_hps : Array[Int]
   my_ranks : Array[Int]      // 長さ 5: [A, B, C, D, S]、active のランクのみ追跡
   opp_ranks : Array[Int]     // 長さ 5、交代でリセット
-  turn : Int                 // 0..turn_limit
+  turn : Int                 // 0..DP_TURN_LIMIT
 } derive(Show, Eq, Hash)
 ```
 
@@ -185,7 +90,16 @@ value(state, ..., cache, stats):
 
 ### 計算量・推奨値
 
-実到達 state は damage が整数刻みで離散化されるため有限。ランク (`my_ranks` / `opp_ranks`) は `[-2, +2]` に丸めて状態空間を抑える。6v6 実データ (Nosada vs カマカマキリ) での実測: turn_limit=1 は 1 秒未満、turn_limit=2 は 2 秒前後、turn_limit=3 は 40 秒前後で完走する (bit issue #38912f7b task C で pure-saddle fast path + node-level αβ-pruning 投入後)。turn_limit=4 以上は 5 分タイムアウトに収まらず、さらなる高速化は別タスクで検討。turn_limit を上げるほど積み技→全抜きのような多ターン脅威を評価できるようになるため、要件に応じて設定してよい (実用上限は現状 turn_limit=3)。`switching_game_winrate_stats` で `ValueStats.hits/misses` を取れるので、実行前に局所的に turn_limit を試して予算感を把握するのが推奨。
+実到達 state は damage が整数刻みで離散化されるため有限。ランク (`my_ranks` / `opp_ranks`) は `[-2, +2]` に丸めて状態空間を抑える。`ValueStats.cached_states` で memoize 済みの固有状態数を取得可能。
+
+**状態空間実測** (合成データ、各ポケモン 1 技):
+
+| 構成 | turn_limit | cached_states | hits/misses | 推定メモリ |
+|---|---|---|---|---|
+| 2v2 ノーマル統一 HP200 | 20 | 113,295 | 2.0:1 | ~23 MB |
+| 3v3 多型 HP150 | 5 | 2,664 | 0.66:1 | ~0.5 MB |
+
+メモリ推定: `cached_states × ~200 bytes/state` (SwitchingGameState struct + HashMap overhead + Double value)。2v2 turn_limit=20 で ~23 MB に収まり、6v6 の選出 1 セル (3v3) でメモリ爆発は発生しない。ただし 3v3 turn_limit=20 は状態数が指数的に増加するため、実データでの計測が必要 (bit issue #a9de372d task B)。6v6 実データ (Nosada vs カマカマキリ) での実測: turn_limit=1 は 1 秒未満、turn_limit=2 は 2 秒前後、turn_limit=3 は 40 秒前後で完走する (bit issue #38912f7b task C で pure-saddle fast path + node-level αβ-pruning 投入後)。turn_limit=4 以上は 5 分タイムアウトに収まらず、さらなる高速化は別タスクで検討。turn_limit を上げるほど積み技→全抜きのような多ターン脅威を評価できるようになるため、要件に応じて設定してよい (実用上限は現状 turn_limit=3)。`switching_game_winrate_stats` で `ValueStats.hits/misses` を取れるので、実行前に局所的に turn_limit を試して予算感を把握するのが推奨。
 
 ### LP 退化時の扱い (pure-saddle fast path)
 
@@ -239,59 +153,147 @@ DamageKey { my_attacker : Bool, atk_idx, def_idx, mv_idx, atk_rank, def_rank : I
 
 ### CLI 文字列
 
-JSON 入力に `team_payoff_model` フィールドを追加:
+JSON 入力の `team_payoff_model` フィールドで指定:
 
-- `"pairwise:<model_string>"` 例: `"pairwise:best1v1"` / `"pairwise:nash_responses"` / `"pairwise:monte_carlo:1000:42"`
-- `"switching_game:<turn_limit>"` 例: `"switching_game:3"`
+- `"switching_game"` (既定)
+- `"screened_switching_game:<trials>:<seed>:<keep_top>"` 例: `"screened_switching_game:1000:42:0.3"`
 
-JSON 互換ルール:
-1. `team_payoff_model` のみ → そのまま使用
-2. `payoff_model` のみ → `Pairwise(parse_model(...))` に自動ラップ
-3. 両方指定 → `team_payoff_model` 優先
-4. 両方とも parse fail → `InvalidJson` raise
+turn_limit はすべて定数: MC screening rollout = `MC_TURN_LIMIT` (5)、DP = `DP_TURN_LIMIT` (20)。
+
+## ScreenedSwitchingGame (TeamPayoffModel)
+
+### enum
+
+```moonbit
+TeamPayoffModel::ScreenedSwitchingGame(mc_trials: Int, mc_seed: UInt64,
+                                       keep_top_quantile: Double)
+```
+
+Team-level の 2 段階パイプライン。SwitchingGame DP (turn_limit=20) が 6v6 の C(6,3)² = 400 セル評価で重くなるケースで、team-level MC で「明らかに弱い選出」を事前に落としてから SwitchingGame DP を残存セルにだけ適用する。
+
+### パイプライン
+
+1. **Phase A — Screening**: `team_monte_carlo_value(selection_i, selection_j, mc_trials, mc_seed ^ cell_idx)` で全 400 セル (size_a × size_b) を埋める。cell_idx = `i * size_b + j` でセル独立な RNG 状態を派生
+2. **Phase B — Nash-weighted pruning**: screening 行列に Nash 均衡を解き、相手の Nash 戦略下での期待値で各行/列をスコアリング。top-`ceil(n * keep_top_quantile)` 行/列だけ残す (昇順ソート)
+   - `row_score[i] = Σ_j col_nash[j] × A[i,j]` (row 視点)
+   - `col_score[j] = -Σ_i row_nash[i] × A[i,j]` (column 視点、符号反転)
+   - Nash support の選出はすべてゲーム値で同率首位になるため、`ceil(n * q) ≥ |Nash support|` であれば support が枝刈りされることは数学的に保証される
+   - 旧方式 (mean-based) は「平均的に弱いが Nash support に入る specialist 選出」を落とすリスクがあったため廃止
+3. **Phase C — Refine**: 残存 sub-matrix `R[i', j'] = switching_game_winrate(..., DP_TURN_LIMIT)` で精密評価
+
+### Short-circuit
+
+`keep_top_quantile >= 1.0` は screening を**完全に skip** して既存 `team_payoff_matrix_switching` に直接フォールスルーする。MC + refine の二重計算を避け、`keep_top=1.0` oracle test の bit-exact 保証 (`FiniteMatrix.at(i,j)` 全セル一致) にも必須。
+
+### team-level MC rollout (`team_rollout`)
+
+- 値域は **[-1, +1] (own 視点の value)**。winrate 名の関数は用意しない
+- 各ターン両者が独立に action を選ぶ:
+  - active KO → forced switch (相手 active への avg best-damage / hp 比最大の alive スロット)
+  - active alive → ε-greedy。ε 確率で全 alive action (UseMove + Switch) から uniform、1-ε で greedy
+  - greedy 基準: `stay_value = best_expected_damage(active, opp_active) / opp_hp`、`switch_value = max over alive others s of best_expected_damage(s, opp_active) / opp_hp`。`switch_value > stay_value + SWITCH_HYSTERESIS` (0.05) のとき Switch、それ以外は best move を UseMove
+- 行動解決: switch-switch は damage なし、switch-move は switch 側が fresh active で受ける、move-move は `turn_order_sign` 逐次解決
+- 終了: 全滅 ±1、turn_limit 到達 → `hp_ratio_own - hp_ratio_opp` を [-1, +1] clamp
+- mega 進化は screening では無視 (精度は refine で担保)
+
+### 計算量
+
+- Phase A: size_a × size_b × mc_trials × avg_turn × damage_calc ≈ (20 × 20 × 1000 × 10 × 数μs) ≈ 2-5 秒
+- Phase C: retained_rows × retained_cols × SwitchingGame 評価時間 ≈ (retained率)² × 40 秒
+- keep_top=0.3 なら 2-5 秒 + (0.3)² × 40 秒 ≈ 6 秒台の目安 (10 倍近い高速化)
+
+### パラメータチューニング指針
+
+C(6,3)² = 400 セルの screening 空間を前提とした推奨値:
+
+| パラメータ | 推奨範囲 | 既定推奨 | 根拠 |
+|---|---|---|---|
+| `trials` | 500–2000 | 1000 | MC 標準誤差 ∝ 1/√trials。√1000 ≈ 32 → 誤差 ≈ 3%。400 cells × 1000 trials = 400K rollout で Phase A 2–5 秒 |
+| `keep_top` | 0.25–0.5 | 0.3 | 20 selections × 0.3 = 6 retained → Phase C 6² = 36 cells (元の 9%)。Nash support size 通常 3–6 |
+| `seed` | 任意 UInt64 | 42 | 再現性が必要な場合に固定。同一 seed → 同一結果 |
+
+**入力サイズ別ガイド**:
+- C(4,3)=4: keep_top ≥ 0.5 推奨 (4 × 0.3 = 1.2 → ceil = 2 は最小限)
+- C(5,3)=10: keep_top=0.3–0.5 (3–5 retained)
+- C(6,3)=20: keep_top=0.25–0.3 (5–6 retained)
+
+**Phase B の Nash-weighted 安全性**: screening 行列に Nash を解き、opponent Nash 下の期待値でスコアリングする。Nash support は全てゲーム値で同率首位 → `ceil(n × q) ≥ |support|` なら support は枝刈りされない (数学的保証)。旧 mean-based は「平均的に弱いが最適応答にだけ刺さる specialist」を落とすリスクがあった。
+
+### 使いどころ (実測ベースの指針)
+
+**多様型 6v6 (各ポケモン 2 技、6タイプ分散) で実測** (macOS M-series):
+
+| モデル | 時間 | Nash value | selections |
+|---|---|---|---|
+| `switching_game:2` | 0.4 秒 | 0.030 | 20 |
+| `switching_game:3` | 5.0 秒 | 0.055 | 20 |
+| `switching_game:4` | 77 秒 | 0.066 | 20 |
+| `switching_game:5` | >2 分 (未完走) | — | — |
+| `switching_game` (tl=20) | >2 分 (未完走) | — | — |
+| `screened:500:42:0.3:3` | 29 秒 | 0.042 | 6 |
+| `screened:500:42:0.3:4` | 43 秒 | 0.054 | 6 |
+
+**ベンチマーク構成**: team=ガブリアス/サーフゴー/カイリュー/ウォッシュロトム/ハッサム/ランドロス vs opponent=ミミッキュ/ドラパルト/キノガッサ/ヒードラン/ウーラオス/カプ・レヒレ。各ポケモン 2 技 (先制技・積み技含む)。
+
+**分析**:
+- tl=3→4 で 15 倍増 (5s→77s)。tl=5 以上は多技構成で実用外
+- screened は **tl=4 で break-even** (43s vs 77s = 44% 高速化)
+- tl=3 では screened が逆に遅い (MC overhead 支配的)
+- tl=20 は switching_game / screened 両方 infeasible (3v3×2技の action space が指数的に膨張)
+
+screening は **MC phase に 400 cells × N trials の rollout オーバヘッド**があり、素の `switching_game` が 30 秒以内に完走する場合は screening のほうが遅い。**使うべきは switching_game が 30 秒以上かかる場合のみ**。
+
+- 先に `time bin/pkdx select` で素の `switching_game:<N>` を計測し、遅いことを確認してから使う
+- 技数 1 (action space 小) なら tl=20 でも実用的 (2v2: 113K states, 数秒)
+- 技数 2+ では tl=3–4 が実用上限
+
+### CLI 文字列
+
+`"screened_switching_game:<trials>:<seed>:<keep_top>"`
+例: `"screened_switching_game:1000:42:0.3"`
+
+**バリデーション**: `trials > 0`, `0 < keep_top <= 1`。`keep_top=0.0` は parser で即 reject。`keep_top > 1.0` も InvalidJson (short-circuit 経路は `>= 1.0` のみで、`1.5` のような不正値は parser で弾く)。
+
+### Double format 制約
+
+`SwitchingGame` と同じく **Single 限定**。`Double + ScreenedSwitchingGame` は `run_select` で `InvalidJson("screened_switching_game does not support double format ...")` を raise。
+
+### 実装の検証
+
+- `team_monte_carlo_test.mbt`: team-specific behavior (全滅 ±1 / HP 比 draw / 同 seed 決定性)
+- `screened_switching_game_test.mbt`: keep_top=1.0 での `FiniteMatrix.at(i,j)` 全セル bit-exact 一致、quantile → 残存数 `ceil(n*q)`、残存 index の昇順ソート、monotonicity (`0.3 < 0.8` で残存数増加)
+- `cli_select_test.mbt`: `run_select` 経由で retained selections の shape / Double 拒否
 
 ## 比較表
 
-| 観点 | Best1v1 | NashResponses | MonteCarloSim | SwitchingGame |
-|---|---|---|---|---|
-| 種別 | pairwise (PayoffModel) | pairwise | pairwise | team-level (TeamPayoffModel) |
-| 計算量 (6v6 single) | 6×6 ≈ 36 damage calc | 36 + 400 small Nash | 上三角 15 cells × N trials × N turns | C(6,3)² × state数 × Nash solve |
-| 技選択 | 最大ダメージ固定 | 同時行動の Nash | greedy max-damage | 行動選択の Nash (技 + 交代) |
-| 交代 | 無視 | 無視 | 無視 | **モデル化** |
-| 確率性 | 決定的 | 決定的 | seeded RNG | 決定的 (期待ダメージ) |
-| 連続値 | {0, 0.5, 1} 三値 | 同上 (内部 Nash で粒度) | [0, 1] 連続 | [-1, +1] 連続 |
-| 推奨場面 | 通常の選出最適 | 技循環中心 | 火力拮抗 / 範囲広いダメージ | 交代戦が決定的 / 積み技や先制技が重要 |
+| 観点 | SwitchingGame | ScreenedSwitchingGame |
+|---|---|---|
+| 種別 | team-level | team-level |
+| 計算量 (6v6 single) | C(6,3)² × state数 × Nash | Phase A 2-5s + Phase C (keep²) × SG |
+| 技選択 | 行動 Nash (技 + 交代) | Phase C で行動 Nash |
+| 交代 | **モデル化** | **モデル化** (screen は簡易 / refine は精密) |
+| 確率性 | 決定的 | 決定的 (screen の seed 固定) |
+| 連続値 | [-1, +1] 連続 | [-1, +1] 連続 |
+| 推奨場面 | 通常の選出最適 | SG が 30 秒以上かかる大規模検証 |
 
 ## CLI / JSON フィールド
 
 `pkdx select` は stdin の JSON で受ける:
 
 ```jsonc
-// pairwise model (legacy field, Phase 0-12)
-{ "team": [...], "opponent": [...], "format": "single", "payoff_model": "best1v1" }
-{ "team": [...], "opponent": [...], "format": "single", "payoff_model": "nash_responses" }
-{ "team": [...], "opponent": [...], "format": "single", "payoff_model": "monte_carlo:1000:42" }
-
-// team-level model (new field, Phase 13)
-{ "team": [...], "opponent": [...], "format": "single", "team_payoff_model": "pairwise:best1v1" }
-{ "team": [...], "opponent": [...], "format": "single", "team_payoff_model": "switching_game:3" }
+{ "team": [...], "opponent": [...], "format": "single", "team_payoff_model": "switching_game" }
+{ "team": [...], "opponent": [...], "format": "single", "team_payoff_model": "screened_switching_game:1000:42:0.3" }
 ```
 
-`team_payoff_model` が指定されたらそれを優先。なければ `payoff_model` を `Pairwise(...)` に自動ラップ。両方 malformed なら `InvalidJson` raise。
-
-## 実装の検証
-
-- `src/payoff/from_damage_test.mbt` に両モデルの単体テスト
-- `nash_responses_matches_inner_game_value`: 1 手 vs 1 手の退化ケースで Best1v1 と一致することを確認 (内部 1×1 の Nash 値 = 単一セル値 = Best1v1 結果)
+`team_payoff_model` が未指定の場合は既定で `SwitchingGame` (DP turn_limit=20)。`payoff_model` / `pairwise:*` / `best1v1` / `nash_responses` / `monte_carlo:*` は全て**廃止済み**で、渡すと `InvalidJson` となる。turn_limit は定数化されておりユーザーからの指定は不可。
 
 ## 将来拡張
 
-- `ChampionsSP(stat_system: StatSystem)` — SP 合計 66 制約下の最適化 (pairwise variant)
-- `SwitchingGame` の Double format 対応 (現在 Single 専用)
-- 状態異常 / 天候 / フィールドのモデル化 (MonteCarloSim と SwitchingGame の双方)
+- `SwitchingGame` / `ScreenedSwitchingGame` の Double format 対応 (現在 Single 専用)
+- 状態異常 / 天候 / フィールドのモデル化
 - 変化技の効果拡充 — 現状は `move.stat_effects` 経由の自己ランク補正のみ。`pkdx_patch/006_move_meta/data.json` に行を足すだけで追加可能。状態異常・交代・ひるみ系に拡張する場合は `move_meta` テーブルのスキーマ (`stat_effects_json` 以外の effect kind 列) 追加と `@model.Move` 側のフィールド追加を検討
-- MonteCarloSim の ε-greedy から局所 Nash LP への切替 (rollout の変化技評価を精緻化)
-- Aggressive αβ-pruning (child alpha/beta propagation) — 現状の node-level 保守的実装は子を常に `(-1, +1)` で呼ぶため bit-exact だが、速度は saddle skip に依存する。子に narrow な `(alpha, beta)` を渡して child が bound を返す aggressive 版は exact 値を保証しない代わりに深い木で大きな速度向上が見込める。実装時は monotonicity に基づく bound propagation の正当性を確認し、bit-exact regression を放棄する旨を明記する
-- Iterative deepening + transposition-table による action reordering — 深さ d の best response を深さ d+1 の探索時に先頭に置く heuristic。αβ の β-cutoff ヒット率を上げる。`SwitchingGameState` は不変・ハッシャブルなので実装の前提は満たしている
+- `team_rollout` の ε-greedy から局所 Nash LP への切替 (rollout の変化技評価を精緻化)
+- Aggressive αβ-pruning (child alpha/beta propagation) — 現状の node-level 保守的実装は子を常に `(-1, +1)` で呼ぶため bit-exact だが、速度は saddle skip に依存する
+- Iterative deepening + transposition-table による action reordering — αβ の β-cutoff ヒット率を上げる
 
-新 pairwise variant は `from_damage.mbt` の `winrate` match に分岐を足し、`payoff_model_enum_exhaustive` test を更新する。team-level variant は `TeamPayoffModel` enum と `team_payoff_matrix_with_team_model` ディスパッチに分岐を足す。
+新 team-level variant は `TeamPayoffModel` enum と `team_payoff_matrix_with_team_model` ディスパッチに分岐を足す。pairwise 系は意図的に削除したため、再導入は非推奨。

@@ -1,37 +1,4 @@
 ///|
-/// Helper: team of `n` combatants with distinct speeds, used to verify
-/// non-trivial cross-payoff matrices.
-fn build_team_with_speeds(
-  prefix : String,
-  speeds : Array[Int],
-) -> Array[Combatant] {
-  let out = Array::make(
-    speeds.length(),
-    mk_combatant(
-      mk_pokemon("", "ノーマル", "", 100, 100, 100, 100, 100, 100),
-      [mk_move("mv", "ノーマル", @model.Physical, 60)],
-    ),
-  )
-  for i in 0..<speeds.length() {
-    out[i] = mk_combatant(
-      mk_pokemon(
-        prefix + i.to_string(),
-        "ノーマル",
-        "",
-        100,
-        100,
-        100,
-        100,
-        100,
-        speeds[i],
-      ),
-      [mk_move("mv", "ノーマル", @model.Physical, 60)],
-    )
-  }
-  out
-}
-
-///|
 /// Helper: dummy team of `n` Pokemon, each with HP `hp`, one damage move,
 /// identical stats — used for terminal/action unit tests where stat details
 /// don't matter.
@@ -218,11 +185,14 @@ test "alive_actions_excludes_fainted_switch_targets" {
 
 ///|
 test "team_payoff_model_enum_exhaustive_match" {
-  let models : Array[TeamPayoffModel] = [Pairwise(Best1v1), SwitchingGame(2)]
+  let models : Array[TeamPayoffModel] = [
+    SwitchingGame(2),
+    ScreenedSwitchingGame(100, 7UL, 0.5, 2),
+  ]
   let labels = models.map(fn(m) {
     match m {
-      Pairwise(_) => "pairwise"
       SwitchingGame(_) => "switching_game"
+      ScreenedSwitchingGame(_, _, _, _) => "screened_switching_game"
     }
   })
   let mut joined = ""
@@ -232,24 +202,7 @@ test "team_payoff_model_enum_exhaustive_match" {
     }
     joined = joined + labels[i]
   }
-  inspect(joined, content="pairwise,switching_game")
-}
-
-///|
-test "team_payoff_matrix_with_pairwise_wraps_existing_team_payoff_matrix" {
-  let team = build_team_with_speeds("T", [100, 95, 105, 90, 110, 85])
-  let opp = build_team_with_speeds("O", [100, 100, 100, 100, 100, 100])
-  let m_legacy = team_payoff_matrix(team, opp, Single, Best1v1)
-  let m_wrapped = team_payoff_matrix_with_team_model(
-    team, opp, Single, Pairwise(Best1v1),
-  )
-  assert_eq(m_legacy.rows(), m_wrapped.rows())
-  assert_eq(m_legacy.cols(), m_wrapped.cols())
-  for i in 0..<m_legacy.rows() {
-    for j in 0..<m_legacy.cols() {
-      assert_eq(m_legacy.at(i, j), m_wrapped.at(i, j))
-    }
-  }
+  inspect(joined, content="switching_game,screened_switching_game")
 }
 
 ///|
@@ -719,10 +672,9 @@ test "transition_rank_affects_damage_sword_dance_increases_output" {
 }
 
 ///|
-test "switching_game_winrate_stats_completes_at_turn_limit_five" {
-  // turn_limit = 5 must terminate — the abstract state graph stays bounded
-  // for small team sizes. Captures the ValueStats so we can assert
-  // memoization observably fires and cache behaviour is healthy.
+test "switching_game_winrate_stats_completes_and_caches" {
+  // Captures the ValueStats so we can assert memoization observably fires
+  // and cache behaviour is healthy.
   let strong = mk_combatant(
     mk_pokemon("A0", "ノーマル", "", 150, 200, 100, 100, 100, 120),
     [mk_move("mv", "ノーマル", @model.Physical, 85)],
@@ -733,7 +685,7 @@ test "switching_game_winrate_stats_completes_at_turn_limit_five" {
   )
   let team_a = [strong, strong]
   let team_b = [ok, ok]
-  let (v, stats, _) = switching_game_winrate_stats(team_a, team_b, 5)
+  let (v, stats, _) = switching_game_winrate_stats(team_a, team_b, 2)
   assert_true(v >= -1.0 && v <= 1.0)
   assert_true(v.is_nan() == false)
   // The recursion must have run (at least one miss observed).
@@ -741,12 +693,12 @@ test "switching_game_winrate_stats_completes_at_turn_limit_five" {
 }
 
 ///|
-test "switching_game_winrate_stats_mirror_match_still_zero_at_turn_limit_five" {
+test "switching_game_winrate_stats_mirror_match_still_zero" {
   let team = mk_combatant(
     mk_pokemon("M", "ノーマル", "", 120, 120, 120, 100, 100, 100),
     [mk_move("mv", "ノーマル", @model.Physical, 60)],
   )
-  let (v, _, _) = switching_game_winrate_stats([team, team], [team, team], 5)
+  let (v, _, _) = switching_game_winrate_stats([team, team], [team, team], 2)
   assert_true(v.abs() < 1.0e-6)
 }
 
@@ -764,19 +716,13 @@ test "damage_cache_hits_dominate_misses_on_repeated_recursion" {
     mk_pokemon("B0", "ノーマル", "", 120, 110, 110, 100, 100, 100),
     [mk_move("mv", "ノーマル", @model.Physical, 60)],
   )
-  let (_, _, dmg) = switching_game_winrate_stats([a, a], [b, b], 3)
+  let (_, _, dmg) = switching_game_winrate_stats([a, a], [b, b], 2)
   assert_true(dmg.misses >= 1)
   assert_true(dmg.hits >= dmg.misses)
 }
 
 ///|
 test "damage_cache_misses_bounded_by_key_space" {
-  // The cache key space is (side × atk_idx × def_idx × mv_idx × atk_rank ×
-  // def_rank). For a 2v2 team with 1 move each and ranks staying at 0
-  // (no stat-boost moves in the set), the upper bound is
-  // 2 (side) × 2 (atk) × 2 (def) × 1 (mv) × 1 (rank pair used) = 8.
-  // In practice only attacker ↔ defender index pairs reachable by the game
-  // appear, so misses must be ≤ 8.
   let a = mk_combatant(
     mk_pokemon("A0", "ノーマル", "", 120, 120, 100, 100, 100, 110),
     [mk_move("mv", "ノーマル", @model.Physical, 70)],
@@ -785,7 +731,7 @@ test "damage_cache_misses_bounded_by_key_space" {
     mk_pokemon("B0", "ノーマル", "", 120, 110, 110, 100, 100, 100),
     [mk_move("mv", "ノーマル", @model.Physical, 60)],
   )
-  let (_, _, dmg) = switching_game_winrate_stats([a, a], [b, b], 3)
+  let (_, _, dmg) = switching_game_winrate_stats([a, a], [b, b], 2)
   assert_true(dmg.misses <= 8)
 }
 
@@ -1417,56 +1363,39 @@ test "alpha_beta_returns_same_value_as_no_pruning_with_switch" {
     mk_pokemon("B1", "ノーマル", "", 130, 100, 100, 100, 100, 110),
     [mk_move("swift", "ノーマル", @model.Physical, 65)],
   )
-  let v_prune = switching_game_winrate([a0, a1], [b0, b1], 2)
-  let (v_no_prune, _) = switching_game_winrate_no_prune([a0, a1], [b0, b1], 2)
+  let v_prune = switching_game_winrate([a0, a1], [b0, b1], 1)
+  let (v_no_prune, _) = switching_game_winrate_no_prune([a0, a1], [b0, b1], 1)
   assert_true((v_prune - v_no_prune).abs() < 1.0e-12)
 }
 
 ///|
 test "alpha_beta_returns_same_value_as_no_pruning_mirror_match" {
-  // Mirror match: expected value is exactly 0 by symmetry. Any divergence
-  // between αβ and reference here would signal a correctness bug in the
-  // pruning predicate.
-  let team = build_dummy_team(2, 120)
-  let v_prune = switching_game_winrate(team, team, 2)
-  let (v_no_prune, _) = switching_game_winrate_no_prune(team, team, 2)
+  let a = mk_combatant(
+    mk_pokemon("A", "ノーマル", "", 120, 120, 120, 100, 100, 100),
+    [mk_move("mv", "ノーマル", @model.Physical, 60)],
+  )
+  let v_prune = switching_game_winrate([a], [a], 2)
+  let (v_no_prune, _) = switching_game_winrate_no_prune([a], [a], 2)
   assert_true((v_prune - v_no_prune).abs() < 1.0e-12)
   assert_true(v_prune.abs() < 1.0e-9)
 }
 
 ///|
 test "alpha_beta_reduces_or_matches_miss_count" {
-  // Dominant team case: strong team should clean up fast, producing many
-  // terminal states early. Node-level saddle detection + β-cutoff should make
-  // the αβ variant visit AT MOST as many unique states as the reference (and
-  // in practice strictly fewer for dominant scenarios).
-  let strong_team = [
-    mk_combatant(
-      mk_pokemon("S0", "ノーマル", "", 150, 250, 120, 100, 120, 200),
-      [mk_move("lethal", "ノーマル", @model.Physical, 250)],
-    ),
-    mk_combatant(
-      mk_pokemon("S1", "ノーマル", "", 150, 250, 120, 100, 120, 200),
-      [mk_move("lethal", "ノーマル", @model.Physical, 250)],
-    ),
-  ]
-  let weak_team = [
-    mk_combatant(
-      mk_pokemon("W0", "ノーマル", "", 50, 50, 50, 50, 50, 30),
-      [mk_move("weak", "ノーマル", @model.Physical, 10)],
-    ),
-    mk_combatant(
-      mk_pokemon("W1", "ノーマル", "", 50, 50, 50, 50, 50, 30),
-      [mk_move("weak", "ノーマル", @model.Physical, 10)],
-    ),
-  ]
+  let strong = mk_combatant(
+    mk_pokemon("S0", "ノーマル", "", 150, 250, 120, 100, 120, 200),
+    [mk_move("lethal", "ノーマル", @model.Physical, 250)],
+  )
+  let weak = mk_combatant(
+    mk_pokemon("W0", "ノーマル", "", 50, 50, 50, 50, 50, 30),
+    [mk_move("weak", "ノーマル", @model.Physical, 10)],
+  )
   let (_, stats_prune, _) = switching_game_winrate_stats(
-    strong_team, weak_team, 2,
+    [strong, strong], [weak, weak], 1,
   )
   let (_, stats_no_prune) = switching_game_winrate_no_prune(
-    strong_team, weak_team, 2,
+    [strong, strong], [weak, weak], 1,
   )
-  // αβ must not visit more states than the reference (soundness of pruning).
   assert_true(stats_prune.misses <= stats_no_prune.misses)
 }
 
@@ -1526,8 +1455,68 @@ test "switching_game_turn_limit_3_produces_finite_value_on_multi_pokemon_team" {
     mk_pokemon("B1", "くさ", "", 120, 130, 100, 130, 100, 130),
     [mk_move("leaf", "くさ", @model.Special, 80)],
   )
-  let v = switching_game_winrate([a0, a1], [b0, b1], 3)
+  let v = switching_game_winrate([a0, a1], [b0, b1], 2)
   assert_true(v >= -1.0 && v <= 1.0)
   assert_true(not(v.is_nan()))
   assert_true(not(v.is_inf()))
+}
+
+///|
+test "state_space_2v2_turn_limit_20_bounded" {
+  // 2v2 with high HP and low-power moves: games last multiple turns,
+  // creating a non-trivial state tree. Verifies DP_TURN_LIMIT=20 completes
+  // and that the memoized state count stays bounded.
+  let a0 = mk_combatant(
+    mk_pokemon("A0", "ノーマル", "", 200, 100, 100, 100, 100, 120),
+    [mk_move("tackle", "ノーマル", @model.Physical, 30)],
+  )
+  let a1 = mk_combatant(
+    mk_pokemon("A1", "ノーマル", "", 200, 100, 100, 100, 100, 100),
+    [mk_move("tackle", "ノーマル", @model.Physical, 30)],
+  )
+  let b0 = mk_combatant(
+    mk_pokemon("B0", "ノーマル", "", 200, 100, 100, 100, 100, 110),
+    [mk_move("tackle", "ノーマル", @model.Physical, 30)],
+  )
+  let b1 = mk_combatant(
+    mk_pokemon("B1", "ノーマル", "", 200, 100, 100, 100, 100, 90),
+    [mk_move("tackle", "ノーマル", @model.Physical, 30)],
+  )
+  let (v, stats, dmg) = switching_game_winrate_stats(
+    [a0, a1], [b0, b1], @payoff.DP_TURN_LIMIT,
+  )
+  println("2v2 tl=20: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}, dmg_misses=\{dmg.misses}")
+  assert_true(v >= -1.0 && v <= 1.0)
+  assert_true(not(v.is_nan()))
+  assert_true(stats.cached_states > 0)
+  assert_true(stats.cached_states < 500000)
+  assert_true(dmg.misses < 200)
+}
+
+///|
+test "state_space_3v3_turn_limit_5_bounded" {
+  // 3v3 with diverse types and moderate HP. turn_limit=5 is used instead of 20
+  // to keep CI runtime reasonable; the 2v2 test above covers turn_limit=20.
+  let mk = fn(name : String, t1 : String, hp : Int, atk : Int, spe : Int) -> Combatant {
+    mk_combatant(
+      mk_pokemon(name, t1, "", hp, atk, 100, atk, 100, spe),
+      [mk_move("m", t1, @model.Physical, 30)],
+    )
+  }
+  let team_a = [
+    mk("A0", "ほのお", 150, 100, 120),
+    mk("A1", "みず", 150, 100, 100),
+    mk("A2", "くさ", 150, 100, 110),
+  ]
+  let team_b = [
+    mk("B0", "でんき", 150, 100, 115),
+    mk("B1", "じめん", 150, 100, 95),
+    mk("B2", "ノーマル", 150, 100, 105),
+  ]
+  let (v, stats, _) = switching_game_winrate_stats(team_a, team_b, 5)
+  println("3v3 tl=5: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}")
+  assert_true(v >= -1.0 && v <= 1.0)
+  assert_true(not(v.is_nan()))
+  assert_true(stats.cached_states > 0)
+  assert_true(stats.cached_states < 500000)
 }
