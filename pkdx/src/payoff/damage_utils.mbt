@@ -17,6 +17,18 @@ fn avg_damage(r : @model.DamageCalcResult) -> Double {
 }
 
 ///|
+/// Effective Lv50 max-HP realized from a combatant's base HP plus its
+/// `stat_system`. Payoff helpers that need a denominator for damage ratios
+/// (e.g. `pkdx nash graph` team-form fast path) go through here instead of
+/// reading `c.pokemon.hp` directly, which carries the base stat.
+fn effective_hp(c : Combatant) -> Int {
+  match c.stat_system {
+    @model.Champions => @damage.calc_stat_champions(c.pokemon.hp, is_hp=true)
+    @model.Standard => @damage.calc_stat(c.pokemon.hp, is_hp=true)
+  }
+}
+
+///|
 /// Build a `DamageCalcInput` with the combatants' abilities/items/tera, the
 /// given attacker/defender ranks, and no weather/field. Used as the canonical
 /// reference input for payoff computation.

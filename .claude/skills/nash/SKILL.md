@@ -312,13 +312,43 @@ JSON
 
 ## Phase 2d: `pkdx nash graph` — DOT 可視化
 
-同じ入力 (matrix / characters) で Graphviz DOT を出力。
+3 種類の入力を受け付ける:
+
+1. **matrix 形式**: 既知の利得行列を直接渡す
+2. **characters 形式**: monocycle (p, v) リストから自動生成
+3. **team + opponent 形式**: `pkdx select` と同じ Combatant JSON。`box/teams/*.meta.json` の `members` をそのまま流せる
 
 ```bash
+# matrix 形式
 cat <<'JSON' | $PKDX nash graph --threshold 0.5
 {"matrix": [[0, 1, -1], [-1, 0, 1], [1, -1, 0]], "labels": ["R", "P", "S"]}
 JSON
+
+# team + opponent 形式 (.meta.json 直接利用)
+jq -n \
+  --slurpfile team box/teams/<自>.meta.json \
+  --slurpfile opp  box/teams/<相手>.meta.json \
+  '{team: $team[0].members, opponent: $opp[0].members}' \
+  | $PKDX nash graph --threshold 0.2 > matchup.dot
+dot -Tpng matchup.dot -o matchup.png
 ```
+
+### team + opponent 形式の詳細
+
+- 入力フィールド: `team` / `opponent` (必須、Combatant 配列)、`stat_system` (任意、既定 `"champions"`)、`turn_limit` (任意、既定 `1`)
+- 行列サイズ: `(n + m) × (n + m)` の零和拡張。上半 `[0..n)` が自チーム、下半 `[n..n+m)` が相手チーム。同陣営ブロックは可視化用ゼロ埋め
+- ノード ID: `team_<i>` / `opp_<j>` の安定 ID + `label="..."` 属性。両陣営に同名ポケモンが居ても DOT で衝突しない
+- `labels` フィールドは指定不可（メンバー名から自動生成）。明示するとエラー
+- `matrix` / `characters` との同時指定もエラー
+
+#### turn_limit の使い分け
+
+| `turn_limit` | 評価方式 | コスト |
+|---|---|---|
+| `1` (既定) | 攻撃技の平均削り率差 (fast path) | 36セルで <1秒 |
+| `>=2` | `switching_game_winrate([a],[b],N)` 1v1 DP | turn_limit に応じて秒〜数十秒 |
+
+`turn_limit` を上げると積み技や交代評価が反映されるが、6×6=36 セルで全1v1 DP を解くため 5以上は本物の 6体構築では数十秒以上かかる。先に `1` で傾向を見てから必要なら上げる。
 
 `threshold` で |A[i,j]| がその値以下のエッジを削除。大きな行列の可視化で有効。
 
