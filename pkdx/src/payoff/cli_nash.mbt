@@ -214,32 +214,29 @@ fn parse_nash_input(
 }
 
 ///|
-/// Format an `Array[Double]` as a JSON array string with 10-digit precision.
-fn fmt_double_array(xs : Array[Double]) -> String {
-  let parts = Array::make(xs.length(), "")
-  for i in 0..<xs.length() {
-    parts[i] = xs[i].to_string()
-  }
+/// Serialize `xs` as a JSON array, delegating per-element formatting
+/// (including any escaping) to `fmt_one`. Shared by int / double / string /
+/// 2-D variants across the payoff CLI.
+fn[T] fmt_json_array(xs : Array[T], fmt_one : (T) -> String) -> String {
   let mut s = "["
-  for i in 0..<parts.length() {
+  for i in 0..<xs.length() {
     if i > 0 {
       s = s + ","
     }
-    s = s + parts[i]
+    s = s + fmt_one(xs[i])
   }
   s + "]"
 }
 
 ///|
+/// Format an `Array[Double]` as a JSON array string.
+fn fmt_double_array(xs : Array[Double]) -> String {
+  fmt_json_array(xs, fn(x) { x.to_string() })
+}
+
+///|
 fn fmt_int_array(xs : Array[Int]) -> String {
-  let mut s = "["
-  for i in 0..<xs.length() {
-    if i > 0 {
-      s = s + ","
-    }
-    s = s + xs[i].to_string()
-  }
-  s + "]"
+  fmt_json_array(xs, fn(x) { x.to_string() })
 }
 
 ///|
@@ -314,14 +311,7 @@ fn dot_escape(s : String) -> String {
 
 ///|
 fn fmt_string_array(xs : Array[String]) -> String {
-  let mut s = "["
-  for i in 0..<xs.length() {
-    if i > 0 {
-      s = s + ","
-    }
-    s = s + "\"" + json_escape(xs[i]) + "\""
-  }
-  s + "]"
+  fmt_json_array(xs, fn(x) { "\"" + json_escape(x) + "\"" })
 }
 
 ///|
@@ -382,12 +372,37 @@ pub fn run_nash_solve(input_json : String) -> String raise NashCliError {
 
 ///|
 /// Run `pkdx nash graph`. Emits a DOT digraph with one edge per entry whose
-/// absolute value exceeds `threshold`. Nodes are labeled by `labels` from the
-/// input JSON, falling back to numeric indices.
+/// absolute value exceeds `threshold`.
+///
+/// Three input shapes are accepted:
+/// - `{"matrix": [[...]], "labels": [...]?}` — legacy direct matrix
+/// - `{"characters": [...]}` — monocycle (p, v) characters
+/// - `{"team": [...], "opponent": [...], "stat_system"?, "turn_limit"?}` —
+///   build pairwise matchup matrix from `pkdx select` style combatants
+///
+/// The team form is routed to `run_nash_graph_team`; matrix/characters keep
+/// the legacy code path. The shared `parse_nash_input` is intentionally not
+/// extended so `pkdx nash solve` continues to reject the team form.
 pub fn run_nash_graph(
   input_json : String,
   threshold : Double,
 ) -> String raise NashCliError {
+  let root = try @json.parse(input_json) catch {
+    err => raise InvalidJson(err.to_string())
+  }
+  let obj = match root {
+    Object(m) => m
+    _ => raise InvalidJson("top-level must be an object")
+  }
+  if obj.contains("team") || obj.contains("opponent") {
+    if not(obj.contains("opponent")) {
+      raise MissingField("opponent")
+    }
+    if not(obj.contains("team")) {
+      raise MissingField("team")
+    }
+    return run_nash_graph_team(obj, threshold)
+  }
   let (matrix, labels) = parse_nash_input(input_json)
   let mut out = "digraph payoff {\n"
   for i in 0..<matrix.rows() {
@@ -409,4 +424,183 @@ pub fn run_nash_graph(
     }
   }
   out + "}"
+}
+
+///|
+/// Team-form `pkdx nash graph` handler. Builds a `(n+m) × (n+m)`
+/// antisymmetric pairwise score matrix:
+///
+/// ```
+/// A[i][n+j]   =  pairwise_score(team[i], opp[j])
+/// A[n+j][i]   = -A[i][n+j]
+/// A[i][i']    =  0   (intra-side block; visualization-only placeholder)
+/// ```
+///
+/// `turn_limit == 1` (default) uses the fast mean-damage ratio difference;
+/// `turn_limit >= 2` routes through `switching_game_winrate([a], [b], n)`
+/// for a full extensive-form 1v1 DP value. Intra-side zeros are NOT a real
+/// payoff — the matrix is graph-only and must not flow into a generic
+/// zero-sum solver.
+fn run_nash_graph_team(
+  obj : Map[String, Json],
+  threshold : Double,
+) -> String raise NashCliError {
+  if obj.contains("matrix") || obj.contains("characters") {
+    raise ConflictingInputs
+  }
+  if obj.contains("labels") {
+    raise InvalidJson(
+      "labels not allowed with team input; node labels are derived from member names",
+    )
+  }
+  let stat_system = match obj.get("stat_system") {
+    Some(String(s)) => parse_stat_system_field(s)
+    Some(_) => raise InvalidJson("stat_system must be a string")
+    None => @model.Champions
+  }
+  let team_json = match obj.get("team") {
+    Some(j) => j
+    None => raise MissingField("team")
+  }
+  let opp_json = match obj.get("opponent") {
+    Some(j) => j
+    None => raise MissingField("opponent")
+  }
+  let team = parse_team_array(team_json, "team", stat_system=stat_system)
+  let opp = parse_team_array(opp_json, "opponent", stat_system=stat_system)
+  let turn_limit = match obj.get("turn_limit") {
+    Some(Number(n, ..)) => {
+      let v = n.to_int()
+      if v <= 0 {
+        raise InvalidJson("turn_limit must be a positive integer")
+      }
+      v
+    }
+    Some(_) => raise InvalidJson("turn_limit must be a number")
+    None => 1
+  }
+  let matrix = build_team_matchup_matrix(team, opp, turn_limit)
+  emit_dot_team_form(matrix, team, opp, threshold)
+}
+
+///|
+/// Build the antisymmetric pairwise score matrix described on
+/// `run_nash_graph_team`. Intra-side cells stay at zero.
+fn build_team_matchup_matrix(
+  team : Array[Combatant],
+  opp : Array[Combatant],
+  turn_limit : Int,
+) -> Array[Array[Double]] {
+  let n = team.length()
+  let m = opp.length()
+  let size = n + m
+  let matrix : Array[Array[Double]] = Array::make(size, ([] : Array[Double]))
+  for i in 0..<size {
+    matrix[i] = Array::make(size, 0.0)
+  }
+  for i in 0..<n {
+    for j in 0..<m {
+      let s = team_pairwise_score(team[i], opp[j], turn_limit)
+      matrix[i][n + j] = s
+      matrix[n + j][i] = -s
+    }
+  }
+  matrix
+}
+
+///|
+/// 1v1 pairwise score for `nash graph` team-form. `turn_limit == 1` uses the
+/// fast mean-damage ratio difference; `turn_limit >= 2` routes through the
+/// full extensive-form DP via `switching_game_winrate`.
+fn team_pairwise_score(
+  a : Combatant,
+  b : Combatant,
+  turn_limit : Int,
+) -> Double {
+  if turn_limit >= 2 {
+    return switching_game_winrate([a], [b], turn_limit)
+  }
+  mean_damage_ratio(a, b) - mean_damage_ratio(b, a)
+}
+
+///|
+/// Mean damage ratio of `a` hitting `d`, normalised by `d`'s effective max
+/// HP. Averaged across `a`'s offensive moves (power > 0, non-status).
+/// Returns 0.0 when `a` has no offensive move.
+fn mean_damage_ratio(a : Combatant, d : Combatant) -> Double {
+  let mut total = 0.0
+  let mut count = 0
+  for mv in a.moves {
+    if mv.power <= 0 || mv.category == @model.Status {
+      continue
+    }
+    let r = @damage.calc_damage(build_input_with_ranks(a, d, mv, 0, 0))
+    total += avg_damage(r)
+    count += 1
+  }
+  if count == 0 {
+    return 0.0
+  }
+  let denom = effective_hp(d).to_double()
+  if denom <= 0.0 {
+    return 0.0
+  }
+  total / denom / count.to_double()
+}
+
+///|
+/// Render the team-form payoff matrix as a DOT digraph with stable
+/// `team_<i>` / `opp_<j>` identifiers and separate `label="..."` attributes.
+/// Stable ids prevent name collisions when both sides include a Pokemon
+/// with the same display name.
+fn emit_dot_team_form(
+  matrix : Array[Array[Double]],
+  team : Array[Combatant],
+  opp : Array[Combatant],
+  threshold : Double,
+) -> String {
+  let n = team.length()
+  let m = opp.length()
+  let mut out = "digraph payoff {\n"
+  for i in 0..<n {
+    out = out +
+      "  team_" +
+      i.to_string() +
+      " [label=\"" +
+      dot_escape(team[i].pokemon.name_ja) +
+      "\"];\n"
+  }
+  for j in 0..<m {
+    out = out +
+      "  opp_" +
+      j.to_string() +
+      " [label=\"" +
+      dot_escape(opp[j].pokemon.name_ja) +
+      "\"];\n"
+  }
+  for i in 0..<(n + m) {
+    for j in 0..<(n + m) {
+      let v = matrix[i][j]
+      if v.abs() > threshold {
+        out = out +
+          "  " +
+          team_form_node_id(i, n) +
+          " -> " +
+          team_form_node_id(j, n) +
+          " [label=\"" +
+          dot_escape(v.to_string()) +
+          "\"];\n"
+      }
+    }
+  }
+  out + "}"
+}
+
+///|
+fn team_form_node_id(idx : Int, n_team : Int) -> String {
+  if idx < n_team {
+    "team_" + idx.to_string()
+  } else {
+    "opp_" + (idx - n_team).to_string()
+  }
 }

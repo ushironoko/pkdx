@@ -208,6 +208,12 @@ echo '{"characters":[{"label":"A","power":0,"v":{"x":2,"y":0}}, ...]}' | bin/pkd
 # Graphviz DOT 出力（閾値以上のエッジのみ）
 echo '{"matrix":[[0,1,-1],[-1,0,1],[1,-1,0]]}' | bin/pkdx nash graph --threshold 0.5
 
+# Graphviz DOT 出力 — team + opponent 形式 (.meta.json 直接利用、Single 限定)
+# 既定 turn_limit=1 で攻撃技平均削り率差ベース、turn_limit>=2 で 1v1 DP に切替
+jq -n --slurpfile t box/teams/<自>.meta.json --slurpfile o box/teams/<相手>.meta.json \
+  '{team: $t[0].members, opponent: $o[0].members}' \
+  | bin/pkdx nash graph --threshold 0.2
+
 # 選出最適化（team + opponent + format JSON を stdin。macOS/Linux のみ）
 cat team.json | bin/pkdx select
 
