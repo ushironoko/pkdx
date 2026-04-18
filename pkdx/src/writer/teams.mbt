@@ -23,8 +23,24 @@ fn heading(level : Int, content : String) -> @markdown.Block {
 }
 
 ///|
+/// Markdown テーブル セル は 1 行で完結する必要があり、改行や復帰文字が残ると行が壊れる。
+/// 自由入力メモ (members[].role) が user 起源でサニタイズされていないため、
+/// 空白系制御文字を半角スペース 1 個に正規化してから cell に詰める。
+/// パイプ `|` は mizchi/markdown 側が `\|` に自動エスケープする。
+fn normalize_cell_text(content : String) -> String {
+  let buf = StringBuilder::new()
+  for c in content {
+    match c {
+      '\n' | '\r' | '\t' => buf.write_char(' ')
+      _ => buf.write_char(c)
+    }
+  }
+  buf.to_string()
+}
+
+///|
 fn cell(content : String) -> @markdown.TableCell {
-  { children: [text(content)], span: s }
+  { children: [text(normalize_cell_text(content))], span: s }
 }
 
 ///|
@@ -161,7 +177,7 @@ fn build_members_table(members : Array[Json]) -> @markdown.Block {
     cell("種族値 (H/A/B/C/D/S)"),
     cell("特性"),
     cell("持ち物"),
-    cell("役割"),
+    cell("メモ"),
   ]
   let rows : Array[Array[@markdown.TableCell]] = []
   for i, m in members {
