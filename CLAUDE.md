@@ -12,9 +12,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **nash** — 零和ナッシュ均衡ソルバー / 選出最適化（`pkdx select`） / メタ乖離分析（`pkdx meta-divergence`）
 - **self-update** — フォーク先でupstreamの最新変更を安全にマージ
 
-CLIツール `pkdx` (MoonBit native binary) が pokedex.db への全クエリ、ダメージ計算、実数値計算・逆算、および構築・育成データのマークダウン出力を担う。
+CLIツール `pkdx` (MoonBit native binary) が pokedex.db への全クエリ、ダメージ計算、実数値計算・逆算、および構築・育成データのマークダウン出力、ゲーム理論に基づいた選出最適化計算などを担う。
 
 **運用モデル**: fork-based。ユーザーはリポジトリをフォークし、`box/` 配下に構築・育成データを蓄積。`self-update` スキルでupstreamに追従する。
+
+## 求められる振る舞い
+
+1. ユーザーに対しては常にツールから求められる正確な情報をフォードバックする。あなたはタイプ相性、ダメージ計算、ポケモン自体の強さなどについて、自身の知識のみで一次解答してはならない。必ずpkdx cliを用いた計算結果をSSoTとすること。
+2. ユーザーの情報を未確認のままupstreamへ送信してはならない。必ずremoteを確認し、送信対象が合っているかユーザーへ確認すること。
+3. 余計な気を効かせない。補足情報を自身の知識のみで付与しない。ユーザーはあなたよりポケモンに詳しい。
+　　3.1 タイプ相性に関しては必ず `pkdx type-chart` で計算してからフィードバックする。あなたが最も間違える箇所
+    3.2 ダメージ計算に関しては必ず `pkdx damage` で計算してからフィードバックする。あなたが次に間違えやすい箇所
+4. 利用可能なポケモン、道具、技のプールを常にDBへ問い合わせ確認する。ユーザーが指定したフォーマット外の情報をフィードバックしてはならない
+    4.1 例: Champions M-Aレギュレーション選択中に、準伝説ポケモンやサーフゴーを案内してしまう（M-Aフォーマット外）
+    4.2 例: Champions M-Aレギュレーション選択中に、こだわりハチマキやとつげきチョッキを案内してしまう（M-Aフォーマット外）
+    4.3 DBデータからわからない場合は、ユーザーに許可をもらってから `WebSearch tool` を実行する
+
 
 ## Setup
 
@@ -138,130 +151,6 @@ pokedex/                  # git submodule (towakey/pokedex)
 # 2. 同期スクリプトを実行
 scripts/sync_version.sh
 # 3. moon.mod.json と version.mbt をコミット
-```
-
-## 絶対遵守事項
-
-- pkdx cliを使わずにポケモンに関する知識、数値を扱わない。自身の知識ではなく、ツールの実行結果のみを利用する
-  - 利用可能ポケモンに関するプールを事前チェックせずユーザーへポケモンを案内してはならない（使えもしないポケモンを案内することの防止）
-  - ステータス計算、ダメージ計算、タイプ相性チェックをせず有利振りを決めつけたり、ユーザーへフィードバックしない（不正確な情報に基づくフィードバックの防止）
-
-
-## CLI Usage (pkdx)
-
-`POKEDEX_DB` 環境変数またはリポジトリルートからの自動解決で DB パスを決定する。
-
-```bash
-# ポケモン検索（日本語名 or 英語名）
-bin/pkdx query "ガブリアス" --version scarlet_violet --format json
-
-# 技一覧取得（ポケモン名 or globalNo）
-bin/pkdx moves "ガブリアス" --version scarlet_violet --format json
-
-# タイプ検索（タイプ名は日本語、最低素早さ指定可）
-bin/pkdx search --type "ドラゴン" --min-speed 100 --version scarlet_violet
-
-# 技の逆引き（技名→覚えるポケモン一覧、デフォルト50件）
-bin/pkdx learners "じしん" --version scarlet_violet
-bin/pkdx learners "じしん" --version scarlet_violet --limit 10 --format json
-
-# ダメージ計算（特性・持ち物・天候・ランク補正等はオプション）
-bin/pkdx damage "ガブリアス" "サーフゴー" "じしん" \
-  --atk-ability "すながくれ" --weather "すなあらし" --format json
-
-# ランク補正付きダメージ計算（つるぎのまい+2の状態）
-bin/pkdx damage "ガブリアス" "ガブリアス" "じしん" --atk-rank 2 --format json
-
-# 性格を指定してダメージ計算（--atk-nature / --def-nature、日本語名）
-# 未指定時は攻撃側=攻撃stat特化相当(+10%)、防御側=無補正
-bin/pkdx damage "ガブリアス" "ガブリアス" "じしん" \
-  --atk-nature いじっぱり --def-nature ずぶとい --format json
-
-# カスタム実数値でダメージ計算（用途: ボディプレス / イカサマ / 特殊配分の再現）
-# --atk-stat / --def-stat は「rank 前の実数値」として解釈され、rank/特性/天候は常に適用される
-bin/pkdx damage "ラウドボーン" "ガブリアス" "ボディプレス" \
-  --atk-stat 180 --format json  # 180 = 攻撃側ラウドボーンの Def 実数値
-bin/pkdx damage "ブラッキー" "ガブリアス" "イカサマ" \
-  --atk-stat 200 --format json  # 200 = 相手ガブリアスの Atk 実数値
-
-# タイプ相性（複合タイプはカンマ区切り）
-bin/pkdx type-chart "ほのお" "くさ"
-bin/pkdx type-chart "じめん" "ひこう,はがね"
-
-# 攻撃範囲カバー率
-bin/pkdx coverage "ほのお,みず,くさ"
-
-# 実数値計算（デフォルト: Champions SP。--ev は SP として解釈される）
-bin/pkdx stat-calc "ガブリアス" --ev "0,32,0,0,0,32" --nature "ようき" --format json
-bin/pkdx stat-calc "ガブリアス" --ev "0,32,0,0,0,32" --nature-up S --nature-down C
-
-# 逆算: 実数値→必要な種族値を逆引き（単一値モード）
-bin/pkdx stat-reverse 130 --ev 32 --nature up
-# 逆算: ポケモン名+実数値6種→SP配分を逆引き（ポケモンモード）
-bin/pkdx stat-reverse "ガブリアス" --stats "183,182,115,90,105,169"
-
-# キャッシュ雛形生成（skillがPhase 0で呼び出す。JSONスキーマ由来のプレースホルダを出力）
-bin/pkdx init-cache team     > box/cache/team_cache_xxx.json
-bin/pkdx init-cache pokemon  > box/cache/breed_cache_xxx.json
-
-# チーム構築レポート保存（skillキャッシュJSON→box/teams/にmd出力、.meta.jsonを並行出力）
-cat box/cache/team_cache_ガブリアス_*.json | bin/pkdx write teams --date 2026-04-06 --axis "ガブリアス"
-
-# 育成データ保存（skillキャッシュJSON→box/pokemons/にmd出力、.meta.jsonを並行出力）
-cat box/cache/breed_cache_ガブリアス_*.json | bin/pkdx write pokemon --name "ガブリアス" --file "スカーフ型"
-
-# 冪等性判定（Champions スクショ取り込み時に skill が呼ぶ。既存 .meta.json と比較して skip/diff/new を JSON 出力）
-# 入力: {"kind":"pokemon"|"team", "cache": <new cache JSON>, "existing": [{"path": "...", "content": <existing meta.json>}]}
-# 出力: {"status":"skip"|"diff"|"new", "matched_file": ..., "differing_fields": [...]?}
-echo '{"kind":"pokemon","cache":{...},"existing":[]}' | bin/pkdx import-check
-
-# 耐久指数最適化（デフォルト: Champions SP。予算66、各上限32）
-bin/pkdx hbd "ガブリアス" --nature ようき
-bin/pkdx hbd "ガブリアス" --nature ようき --fixed-ev "_,0,_,0,_,32" --hp-snap leftovers
-bin/pkdx hbd "カビゴン" --nature ずぶとい --phys-weight 2 --spec-weight 1 --top 5
-
-# Nash 均衡ソルバー（matrix もしくは characters JSON を stdin）
-echo '{"matrix":[[0,1,-1],[-1,0,1],[1,-1,0]],"labels":["R","P","S"]}' | bin/pkdx nash solve
-echo '{"characters":[{"label":"A","power":0,"v":{"x":2,"y":0}}, ...]}' | bin/pkdx nash solve
-
-# Graphviz DOT 出力（閾値以上のエッジのみ）
-echo '{"matrix":[[0,1,-1],[-1,0,1],[1,-1,0]]}' | bin/pkdx nash graph --threshold 0.5
-
-# Graphviz DOT 出力 — team + opponent 形式 (.meta.json 直接利用、Single 限定)
-# 既定 turn_limit=1 で攻撃技平均削り率差ベース、turn_limit>=2 で 1v1 DP に切替
-jq -n --slurpfile t box/teams/<自>.meta.json --slurpfile o box/teams/<相手>.meta.json \
-  '{team: $t[0].members, opponent: $o[0].members}' \
-  | bin/pkdx nash graph --threshold 0.2
-
-# 選出最適化（team + opponent + format JSON を stdin。macOS/Linux のみ）
-cat team.json | bin/pkdx select
-
-# 選出最適化: stat_system (既定: "champions")
-# - "champions": Champions SP ベースの実数値計算 (SP=32 default)
-# - "standard": 旧バージョン (SV等) の EV252/IV31 ベース
-echo '{"team":[...],"opponent":[...],"format":"single","stat_system":"champions"}' | bin/pkdx select
-echo '{"team":[...],"opponent":[...],"format":"single","stat_system":"standard"}' | bin/pkdx select
-
-# 選出最適化: team_payoff_model (Single 限定、現時点では Double は未対応)
-# - "switching_game" (既定): 交代込み extensive-form ゲーム木 (DP turn_limit=5 既定、`switching_game:<N>` で上書き可)
-# - "screened_switching_game:<trials>:<seed>:<keep_top>":
-#   MC screening (rollout turn_limit=5) → 下位 quantile 枝刈り → 残存 sub-matrix のみ SwitchingGame DP (refine turn_limit=5 既定) で精密評価。
-#   switching_game が 30 秒以上かかる実戦データで推奨 (例: 1000:42:0.3)
-echo '{"team":[...],"opponent":[...],"format":"single","team_payoff_model":"switching_game"}' | bin/pkdx select
-echo '{"team":[...],"opponent":[...],"format":"single","team_payoff_model":"screened_switching_game:1000:42:0.3"}' | bin/pkdx select
-
-# 旧 pairwise 系 (best1v1 / nash_responses / monte_carlo / pairwise:* / payoff_model フィールド) は
-# 2026-04 に全廃。指定すると InvalidJson で弾かれる。
-
-# メタ乖離分析（usage + matrix JSON を stdin）
-echo '{"usage":[0.4,0.3,0.3],"matrix":[[0,1,-1],[-1,0,1],[1,-1,0]]}' | bin/pkdx meta-divergence
-
-### Deprecated (scarlet_violet 等の旧バージョン)
-
-# 旧バージョンでは --ev は努力値、--iv は個体値として解釈される
-bin/pkdx stat-calc "ガブリアス" --ev "0,252,0,0,4,252" --nature "ようき" --version scarlet_violet
-bin/pkdx stat-reverse "ガブリアス" --stats "183,200,115,90,106,169" --iv 31 --version scarlet_violet
-bin/pkdx hbd "ガブリアス" --nature ようき --fixed-ev "_,0,_,0,_,252" --version scarlet_violet
 ```
 
 ## Reference documents
