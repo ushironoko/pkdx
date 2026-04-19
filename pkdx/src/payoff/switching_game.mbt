@@ -573,6 +573,12 @@ fn effective_combatant(c : Combatant, is_mega : Bool) -> Combatant {
         dream_ability: "",
         weight: base.weight,
       }
+      // mega 後は base が変化するため、pre-mega `actual_stats` はそのまま
+      // 使えない。`stat_points` + `nature` が残っていれば post-mega base から
+      // 実数値を再計算する。残っていないときは engine 既定投資に落とす。
+      let post_mega_actual_stats = recompute_actual_stats_for_mega(
+        effective_pokemon, c,
+      )
       {
         pokemon: effective_pokemon,
         moves: c.moves,
@@ -581,10 +587,74 @@ fn effective_combatant(c : Combatant, is_mega : Bool) -> Combatant {
         tera_type: c.tera_type,
         stat_system: c.stat_system,
         mega_form: c.mega_form,
+        nature: c.nature,
+        stat_points: c.stat_points,
+        actual_stats: post_mega_actual_stats,
+        ivs: c.ivs,
       }
     }
     _ => c
   }
+}
+
+///|
+/// Recompute `actual_stats` for the post-mega Pokemon using the combatant's
+/// `stat_points` and `nature`. Returns `None` when either input is missing
+/// (the caller drops `actual_stats` so the engine falls back to its default
+/// investment for the post-mega form).
+///
+/// HP is not changed by mega evolution, so HP is taken from pre-mega
+/// `actual_stats` when available (preserves user spread even if `stat_points`
+/// HP differs from the "implied" recomputation). Other stats are always
+/// recomputed from the post-mega base to stay in sync with the post-mega form.
+///
+/// Standard format: `pre.ivs` が与えられていればユーザ指定の IV 配列を
+/// そのまま流し込み、欠損時のみ 31 揃い (完璧個体) を仮定する。0 Atk
+/// 特殊アタッカーや 0 Spe トリル等で IV を敢えて下げた構築は、ここで IV を
+/// 引き継がないと post-mega の A / Spe が「勝手に 31 基準」へ流されて
+/// しまうため、pre-mega `actual_stats` で守った user spread が壊れる。
+/// Champions format は IV 廃止なので `ivs` フィールドは読み飛ばす。
+fn recompute_actual_stats_for_mega(
+  post_mega : @model.Pokemon,
+  pre : Combatant,
+) -> Array[Int]? {
+  let sp = match pre.stat_points {
+    Some(p) if p.length() == 6 => p
+    _ => return None
+  }
+  let nature = match pre.nature {
+    Some(n) => n
+    None => return None
+  }
+  let ivs : FixedArray[Int] = match pre.ivs {
+    Some(arr) if arr.length() == 6 =>
+      [arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]]
+    _ => [31, 31, 31, 31, 31, 31]
+  }
+  let model : @damage.StatModel = match pre.stat_system {
+    @model.Champions => @damage.Champions
+    @model.Standard => @damage.Standard(ivs~)
+  }
+  let bases : FixedArray[Int] = [
+    post_mega.hp, post_mega.atk, post_mega.def_, post_mega.spa, post_mega.spd,
+    post_mega.spe,
+  ]
+  let stat_indices : FixedArray[@model.StatIndex] = [
+    HP, Atk, Def, SpA, SpD, Spe,
+  ]
+  let out : Array[Int] = Array::make(6, 0)
+  // HP: mega は HP を変えないので、pre-mega の actual_stats[0] が与えられて
+  // いればそちらを優先する (stat_points と actual_stats が独立に書かれたときに
+  // actual_stats 側を尊重する方針)。無ければ stat_points から再計算する。
+  out[0] = match pre.actual_stats {
+    Some(a) if a.length() == 6 => a[0]
+    _ => model.calc_hp(bases[0], sp[0])
+  }
+  for i in 1..<6 {
+    let (num, den) = @model.nature_mult_int(nature, stat_indices[i])
+    out[i] = model.calc_other(i, bases[i], sp[i], num, den)
+  }
+  Some(out)
 }
 
 ///|

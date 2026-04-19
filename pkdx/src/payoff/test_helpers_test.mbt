@@ -73,6 +73,10 @@ fn mk_combatant(
   item~ : String = "",
   tera_type~ : String = "",
   mega_form~ : @model.MegaForm? = None,
+  nature~ : @model.Nature? = None,
+  stat_points~ : Array[Int]? = None,
+  actual_stats~ : Array[Int]? = None,
+  ivs~ : Array[Int]? = None,
 ) -> Combatant {
   {
     pokemon,
@@ -82,5 +86,9 @@ fn mk_combatant(
     tera_type,
     stat_system: @model.Standard,
     mega_form,
+    nature,
+    stat_points,
+    actual_stats,
+    ivs,
   }
 }

@@ -20,6 +20,7 @@
 ///   "mega_form": {"atk":Int, "def":Int, "spa":Int, "spd":Int, "spe":Int,
 ///                 "type1":String, "type2":String, "ability":String,
 ///                 "name_ja":String}?,  // optional; present if mega-capable
+///   "ivs": {"h":Int, "a":Int, "b":Int, "c":Int, "d":Int, "s":Int}?,
 ///   "moves":   [{"name":..., "type":..., "category":"物理"|"特殊"|"変化",
 ///                "power":Int, "priority":Int?, "stat_effects":[[Int,Int], ...]?}, ...]
 /// }
@@ -331,6 +332,10 @@ fn parse_combatant_json(
         Some(mj) => Some(parse_mega_form_json(mj, ctx + ".mega_form"))
         None => None
       }
+      let nature = parse_nature_field(m, ctx)
+      let stat_points = parse_stat_points_field(m)
+      let actual_stats = parse_actual_stats_field(m)
+      let ivs = parse_ivs_field(m)
       {
         pokemon: poke,
         moves,
@@ -339,9 +344,120 @@ fn parse_combatant_json(
         tera_type: parse_str_field(m, "tera"),
         stat_system,
         mega_form,
+        nature,
+        stat_points,
+        actual_stats,
+        ivs,
       }
     }
     _ => raise InvalidJson(ctx + " must be an object")
+  }
+}
+
+///|
+/// `nature` (日本語名) を `@model.Nature` へ解決する。
+///
+/// 振る舞い:
+///   - キー欠損 / 明示 `null` / 空文字 → `None` (engine 既定にフォールバック)。
+///   - 既知の性格名 → `Some(nature)`。
+///   - 未知の文字列 / 文字列以外 → `InvalidJson` を raise。
+///
+/// 未知文字列を `None` に丸めてしまうと、damage engine の "攻撃側 None = +10% 補正"
+/// 既定により、typo (例: `"ようき "` の末尾空白) の入力が黙って攻撃を底上げする。
+/// select の数値は payoff 行列に直接効くので、検出可能な入力エラーは
+/// 失敗させてユーザに気付かせる方針。
+fn parse_nature_field(
+  m : Map[String, Json],
+  ctx : String,
+) -> @model.Nature? raise NashCliError {
+  match m.get("nature") {
+    None => None
+    Some(Null) => None
+    Some(String(s)) => {
+      if s.length() == 0 {
+        return None
+      }
+      match @model.nature_from_ja(s) {
+        Some(n) => Some(n)
+        None =>
+          raise InvalidJson(
+            ctx +
+            ".nature: unknown nature name " +
+            s +
+            " (expected a Japanese nature name like 'ようき' / 'ひかえめ')",
+          )
+      }
+    }
+    Some(_) => raise InvalidJson(ctx + ".nature must be a string")
+  }
+}
+
+///|
+/// `stat_points`: `{h,a,b,c,d,s}` 形式の 6 要素 SP (Champions) / EV (Standard)。
+/// post-mega 実数値の再計算に使う「振り」そのもので、`actual_stats` と違い
+/// engine override には直接渡らない。スキーマ的には `actual_stats` と同じ
+/// short key 形式のみ受け付ける。欠損・部分欠損は `None` (= 再計算不可、
+/// post-mega は engine 既定投資にフォールバック)。
+fn parse_stat_points_field(m : Map[String, Json]) -> Array[Int]? {
+  match m.get("stat_points") {
+    Some(Object(st)) => {
+      let keys = ["h", "a", "b", "c", "d", "s"]
+      let out : Array[Int] = Array::make(6, 0)
+      for i in 0..<6 {
+        match st.get(keys[i]) {
+          Some(Number(n, ..)) => out[i] = n.to_int()
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+///|
+/// `actual_stats`: `{h,a,b,c,d,s}` の 6 要素を HP/Atk/Def/SpA/SpD/Spe 順の
+/// 配列として返す。team-builder の cache スキーマと揃えた short key 形式のみ
+/// 受け付ける (long key は breed 側の pokemon_schema 専用)。欠損・部分欠損は
+/// `None` にフォールバックする (厳密にして skill 側のバグを隠したくないが、
+/// 既存の base_stats だけで動いていたケースの後方互換を取るため optional)。
+fn parse_actual_stats_field(m : Map[String, Json]) -> Array[Int]? {
+  match m.get("actual_stats") {
+    Some(Object(st)) => {
+      let keys = ["h", "a", "b", "c", "d", "s"]
+      let out : Array[Int] = Array::make(6, 0)
+      for i in 0..<6 {
+        match st.get(keys[i]) {
+          Some(Number(n, ..)) => out[i] = n.to_int()
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+///|
+/// `ivs`: `{h,a,b,c,d,s}` 形式の 6 要素 IV (Standard format 専用)。
+/// post-mega 実数値の再計算で使う「個体値」そのもの。Champions は IV 廃止
+/// のため読み込んでも damage/stat 計算では無視される (schema 側でも Standard
+/// 構築のみに emit する運用)。キー欠損・部分欠損は `None` フォールバックで、
+/// recompute_actual_stats_for_mega 側で 31 揃い (完璧個体) を仮定する。
+fn parse_ivs_field(m : Map[String, Json]) -> Array[Int]? {
+  match m.get("ivs") {
+    Some(Object(st)) => {
+      let keys = ["h", "a", "b", "c", "d", "s"]
+      let out : Array[Int] = Array::make(6, 0)
+      for i in 0..<6 {
+        match st.get(keys[i]) {
+          Some(Number(n, ..)) => out[i] = n.to_int()
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
   }
 }
 
@@ -419,6 +535,10 @@ fn mk_empty_combatant() -> Combatant {
     tera_type: "",
     stat_system: @model.Champions,
     mega_form: None,
+    nature: None,
+    stat_points: None,
+    actual_stats: None,
+    ivs: None,
   }
 }
 
