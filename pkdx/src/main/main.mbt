@@ -136,7 +136,209 @@ fn build_cli() -> @admiral.CliApp {
       cmd_select(),
       cmd_meta_divergence(),
       cmd_migrate(),
+      cmd_cache_clear(),
+      cmd_damage_bench(),
       cmd_convert(),
+    ],
+  )
+}
+
+///|
+/// `pkdx damage-bench` — measure per-phase timings of the damage cache
+/// to locate the hit-rate break-even point. Emits TSV on stderr.
+fn cmd_damage_bench() -> @admiral.CommandDef {
+  @admiral.command(
+    name="damage-bench",
+    description="Benchmark the damage cache (emits per-phase median/p99 on stderr)",
+    options=[
+      @admiral.int("entries", description="Seed the cache with N dummy entries before timing", default=Some(0)),
+      @admiral.int("iterations", description="Run I iterations against a fixed key (1st is a miss, rest hit)", default=Some(100)),
+      @admiral.string("attacker", description="Attacker Pokemon name", default=Some("ガブリアス")),
+      @admiral.string("defender", description="Defender Pokemon name", default=Some("バンギラス")),
+      @admiral.string("move", description="Move name", default=Some("じしん")),
+      version_option(),
+    ],
+    run=Some(fn(ctx) {
+      run_damage_bench(
+        ctx_int(ctx, "entries"),
+        ctx_int(ctx, "iterations"),
+        ctx_str(ctx, "attacker"),
+        ctx_str(ctx, "defender"),
+        ctx_str(ctx, "move"),
+        ctx_str(ctx, "version"),
+      )
+    }),
+  )
+}
+
+///|
+fn run_damage_bench(
+  entries : Int,
+  iterations : Int,
+  attacker_name : String,
+  defender_name : String,
+  move_name : String,
+  version : String,
+) -> Unit {
+  let cache = match
+    @damage_cache.open_or_init(
+      resolve_damage_cache_path(),
+      pkdx_version,
+      @migrate.latest_migration_name(),
+    ) {
+    Ok(c) => c
+    Err(e) => {
+      exit_error("damage_cache open failed: " + e)
+      return
+    }
+  }
+  // Clear pre-existing entries so the first iteration of the fixed-key
+  // loop is deterministically a miss.
+  match @damage_cache.clear_all(cache) {
+    Ok(_) => ()
+    Err(e) => {
+      @damage_cache.close(cache)
+      exit_error("damage_cache clear failed: " + e)
+      return
+    }
+  }
+  if entries > 0 {
+    match @damage_cache.seed_dummy_entries(cache, entries) {
+      Ok(_) => ()
+      Err(e) => {
+        @damage_cache.close(cache)
+        exit_error("seed_dummy_entries failed: " + e)
+        return
+      }
+    }
+  }
+  let key_input = @damage_cache.CacheKeyInput::{
+    version,
+    regulation: "",
+    attacker: attacker_name,
+    defender: defender_name,
+    move_name,
+    atk_ability: "",
+    def_ability: "",
+    atk_item: "",
+    def_item: "",
+    weather: "",
+    field: "",
+    tera_type: "",
+    critical: false,
+    is_double: false,
+    atk_stat: 0,
+    def_stat: 0,
+    def_hp: 0,
+    atk_nature: "",
+    def_nature: "",
+    atk_rank: 0,
+    def_rank: 0,
+    fainted_count: 2,
+  }
+  let key = match @damage_cache.build_cache_key(key_input) {
+    Ok(k) => k
+    Err(e) => {
+      @damage_cache.close(cache)
+      exit_error("build_cache_key failed: " + e)
+      return
+    }
+  }
+  with_db(fn(db) {
+    let atk_p = match @db.query_pokemon(db, attacker_name, version) {
+      Ok(p) => p
+      Err(e) => {
+        @damage_cache.close(cache)
+        exit_error("query_pokemon (attacker) failed: " + e)
+        return
+      }
+    }
+    let def_p = match @db.query_pokemon(db, defender_name, version) {
+      Ok(p) => p
+      Err(e) => {
+        @damage_cache.close(cache)
+        exit_error("query_pokemon (defender) failed: " + e)
+        return
+      }
+    }
+    let move_ = match @db.query_move(db, move_name, version) {
+      Ok(m) => m
+      Err(e) => {
+        @damage_cache.close(cache)
+        exit_error("query_move failed: " + e)
+        return
+      }
+    }
+    let input = @model.DamageCalcInput::{
+      attacker: atk_p,
+      defender: def_p,
+      move_,
+      atk_ability: "",
+      def_ability: "",
+      atk_item: "",
+      def_item: "",
+      weather: @model.weather_from_jp(""),
+      field: @model.field_from_jp(""),
+      tera_type: "",
+      critical: false,
+      atk_nature: None,
+      def_nature: None,
+      atk_stat_override: 0,
+      def_stat_override: 0,
+      def_hp_override: 0,
+      atk_rank: 0,
+      def_rank: 0,
+      fainted_count: 2,
+      is_double: false,
+      stat_system: if version == "champions" {
+        @model.Champions
+      } else {
+        @model.Standard
+      },
+    }
+    let json_format = @cli.parse_output_format("json")
+    let report = @damage_cache.run_bench(cache, key, iterations, fn() {
+      let result = @damage.calc_damage(input)
+      @cli.format_damage(result, input, json_format)
+    })
+    @damage_cache.close(cache)
+    // Emit TSV to stderr so stdout can be redirected cleanly.
+    pkdx_eprintln(
+      @db.to_c_bytes(
+        "entries=" +
+        entries.to_string() +
+        " iterations=" +
+        iterations.to_string() +
+        " miss=" +
+        report.miss_count.to_string() +
+        " hit=" +
+        report.hit_count.to_string(),
+      ),
+    )
+    pkdx_eprintln(
+      @db.to_c_bytes(@damage_cache.format_bench_report_tsv(report)),
+    )
+  })
+}
+
+///|
+/// `pkdx cache-clear damage` — drop all cached damage entries while
+/// leaving the cache DB (and its meta) in place so the next damage call
+/// simply repopulates.
+fn cmd_cache_clear() -> @admiral.CommandDef {
+  @admiral.command(
+    name="cache-clear",
+    description="Remove cached entries for a pkdx subcommand",
+    subcommands=[
+      @admiral.command(
+        name="damage",
+        description="Clear the persistent damage cache (" +
+          DAMAGE_CACHE_REL_PATH +
+          "; override via " +
+          DAMAGE_CACHE_ENV_VAR +
+          ")",
+        run=Some(fn(_ctx) { run_cache_clear_damage() }),
+      ),
     ],
   )
 }
@@ -174,6 +376,34 @@ fn cmd_convert() -> @admiral.CommandDef {
       ),
     ],
   )
+}
+
+///|
+fn run_cache_clear_damage() -> Unit {
+  // open_or_init will create an empty DB if the file is missing, which
+  // keeps the command idempotent.
+  let cache = match
+    @damage_cache.open_or_init(
+      resolve_damage_cache_path(),
+      pkdx_version,
+      @migrate.latest_migration_name(),
+    ) {
+    Ok(c) => c
+    Err(e) => {
+      exit_error("damage_cache open failed: " + e)
+      return
+    }
+  }
+  match @damage_cache.clear_all(cache) {
+    Ok(_) => {
+      @damage_cache.close(cache)
+      println("damage_cache: cleared")
+    }
+    Err(e) => {
+      @damage_cache.close(cache)
+      exit_error("damage_cache clear failed: " + e)
+    }
+  }
 }
 
 ///|
@@ -271,7 +501,29 @@ fn run_migrate(repo_root : String, resync : Bool) -> Unit {
   }
   match @migrate.run(db_path, repo_root, resync~) {
     Err(e) => exit_error(e)
-    Ok(report) =>
+    Ok(report) => {
+      // Realign the damage cache's meta so subsequent `pkdx damage`
+      // invocations don't needlessly wipe their entries. Only sync when
+      // the cache file already exists — otherwise we'd create an empty
+      // SQLite DB purely as a side effect of running migrations.
+      let cache_path = resolve_damage_cache_path()
+      if @db.file_exists(cache_path) {
+        match
+          @damage_cache.sync_meta_after_migrate(
+            cache_path,
+            pkdx_version,
+            @migrate.latest_migration_name(),
+          ) {
+          Ok(_) => ()
+          Err(e) =>
+            pkdx_eprintln(
+              @db.to_c_bytes(
+                "damage_cache: meta sync failed (cache may be wiped on next damage run): " +
+                e,
+              ),
+            )
+        }
+      }
       println(
         "pkdx_patch: " +
         report.applied.to_string() +
@@ -281,6 +533,7 @@ fn run_migrate(repo_root : String, resync : Bool) -> Unit {
         report.total.to_string() +
         " total)",
       )
+    }
   }
 }
 
@@ -424,6 +677,7 @@ fn cmd_damage() -> @admiral.CommandDef {
       @admiral.int("atk-rank", description="Attacker stat stage (-6..+6). For Body Press this is the Defense stage", default=Some(0)),
       @admiral.int("def-rank", description="Defender stat stage (-6..+6)", default=Some(0)),
       @admiral.int("fainted-count", description="Number of fainted allies (0-5, for Supreme Overlord/そうだいしょう)", default=Some(2)),
+      @admiral.bool("no-cache", description="Bypass the persistent damage cache (box/cache/damage_cache.sqlite)"),
     ],
     positionals=[
       @admiral.positional("attacker", description="Attacker Pokemon name", required=true),
@@ -434,8 +688,10 @@ fn cmd_damage() -> @admiral.CommandDef {
       // Convert string CLI values to domain enums at the ADT boundary, before
       // handing them to run_damage. This matches the `weather_from_jp` /
       // `field_from_jp` idiom used elsewhere in the project.
-      let weather = @model.weather_from_jp(ctx_str(ctx, "weather"))
-      let field = @model.field_from_jp(ctx_str(ctx, "field"))
+      let weather_str = ctx_str(ctx, "weather")
+      let field_str = ctx_str(ctx, "field")
+      let weather = @model.weather_from_jp(weather_str)
+      let field = @model.field_from_jp(field_str)
       run_damage(
         ctx_str(ctx, "attacker"),
         ctx_str(ctx, "defender"),
@@ -448,6 +704,8 @@ fn cmd_damage() -> @admiral.CommandDef {
         ctx_str(ctx, "def-item"),
         weather,
         field,
+        weather_str,
+        field_str,
         ctx_str(ctx, "tera-type"),
         ctx.get_bool("critical"),
         ctx.get_bool("double"),
@@ -459,6 +717,7 @@ fn cmd_damage() -> @admiral.CommandDef {
         ctx_int(ctx, "atk-rank"),
         ctx_int(ctx, "def-rank"),
         ctx_int(ctx, "fainted-count"),
+        ctx.get_bool("no-cache"),
       )
     }),
   )
@@ -802,6 +1061,46 @@ fn run_learners(
 }
 
 ///|
+/// Cache path relative to the repo root. Combined with the resolved root in
+/// `resolve_damage_cache_path` — `pkdx damage`, `pkdx select`, and
+/// `pkdx cache-clear damage` must land on the same file regardless of CWD.
+const DAMAGE_CACHE_REL_PATH : String = "box/cache/damage_cache.sqlite"
+
+///|
+/// Environment override for the damage cache path. Mirrors `POKEDEX_DB` so
+/// callers running outside the repo layout (CI, sandboxes, tests) can point
+/// the cache anywhere writable.
+const DAMAGE_CACHE_ENV_VAR : String = "PKDX_DAMAGE_CACHE"
+
+///|
+/// Resolve the persistent damage cache path. Precedence:
+///   1. `PKDX_DAMAGE_CACHE` env var (absolute or relative — used verbatim).
+///   2. Repo root anchor: probe the same candidates as `resolve_db_path`
+///      (`./pokedex/pokedex.db`, `../pokedex/pokedex.db`) and return
+///      `<root>/box/cache/damage_cache.sqlite` for the first match. This keeps
+///      `pkdx damage` / `pkdx select` pointing at the same cache whether they
+///      are run from the repo root or from `pkdx/` during development.
+///   3. Fallback: CWD-relative `box/cache/damage_cache.sqlite`, matching the
+///      historical behavior when the repo root cannot be located.
+fn resolve_damage_cache_path() -> String {
+  match @sys.get_env_var(DAMAGE_CACHE_ENV_VAR) {
+    Some(p) if p.length() > 0 => return p
+    _ => ()
+  }
+  let anchors : Array[(String, String)] = [
+    ("pokedex/pokedex.db", "."),
+    ("../pokedex/pokedex.db", ".."),
+  ]
+  for i = 0; i < anchors.length(); i = i + 1 {
+    let (marker, root) = anchors[i]
+    if @db.file_exists(marker) {
+      return root + "/" + DAMAGE_CACHE_REL_PATH
+    }
+  }
+  DAMAGE_CACHE_REL_PATH
+}
+
+///|
 fn run_damage(
   attacker_name : String,
   defender_name : String,
@@ -814,6 +1113,8 @@ fn run_damage(
   def_item : String,
   weather : @model.Weather,
   field : @model.Field,
+  weather_str : String,
+  field_str : String,
   tera_type : String,
   critical : Bool,
   is_double : Bool,
@@ -825,6 +1126,7 @@ fn run_damage(
   atk_rank : Int,
   def_rank : Int,
   fainted_count : Int,
+  no_cache : Bool,
 ) -> Unit {
   if atk_rank < -6 || atk_rank > 6 {
     println("Error: --atk-rank must be in [-6, 6]")
@@ -856,10 +1158,87 @@ fn run_damage(
       }
     }
   }
+  // Cache path: only active for JSON output because the cached value is
+  // JSON-shaped and table rendering depends on the original DamageCalcInput.
+  let use_cache = match format {
+    @cli.Json => not(no_cache)
+    _ => false
+  }
+  let cache_key_opt : String? = if use_cache {
+    let key_input = @damage_cache.CacheKeyInput::{
+      version: game.version,
+      regulation: game.regulation,
+      attacker: attacker_name,
+      defender: defender_name,
+      move_name,
+      atk_ability,
+      def_ability,
+      atk_item,
+      def_item,
+      weather: weather_str,
+      field: field_str,
+      tera_type,
+      critical,
+      is_double,
+      atk_stat,
+      def_stat,
+      def_hp,
+      atk_nature: atk_nature_str,
+      def_nature: def_nature_str,
+      atk_rank,
+      def_rank,
+      fainted_count,
+    }
+    match @damage_cache.build_cache_key(key_input) {
+      Ok(k) => Some(k)
+      Err(e) => {
+        pkdx_eprintln(
+          @db.to_c_bytes("damage_cache: key build failed, skipping cache: " + e),
+        )
+        None
+      }
+    }
+  } else {
+    None
+  }
+  let cache_opt : @damage_cache.DamageDiskCache? = match cache_key_opt {
+    Some(_) =>
+      match
+        @damage_cache.open_or_init(
+          resolve_damage_cache_path(),
+          pkdx_version,
+          @migrate.latest_migration_name(),
+        ) {
+        Ok(c) => Some(c)
+        Err(e) => {
+          pkdx_eprintln(
+            @db.to_c_bytes("damage_cache: open failed, skipping cache: " + e),
+          )
+          None
+        }
+      }
+    None => None
+  }
+  match (cache_opt, cache_key_opt) {
+    (Some(cache), Some(key)) =>
+      match @damage_cache.get(cache, key) {
+        Some(value_json) => {
+          @damage_cache.close(cache)
+          println(value_json)
+          return
+        }
+        None => ()
+      }
+    _ => ()
+  }
   with_db(fn(db) {
     let atk_pokemon = match @db.query_pokemon(db, attacker_name, game.version) {
       Ok(p) => p
       Err(e) => {
+        match cache_opt {
+          Some(c) => @damage_cache.close(c)
+          None => ()
+        }
         println("Error: " + e)
         return
       }
@@ -867,6 +1246,10 @@ fn run_damage(
     let def_pokemon = match @db.query_pokemon(db, defender_name, game.version) {
       Ok(p) => p
       Err(e) => {
+        match cache_opt {
+          Some(c) => @damage_cache.close(c)
+          None => ()
+        }
         println("Error: " + e)
         return
       }
@@ -874,6 +1257,10 @@ fn run_damage(
     let move_ = match @db.query_move(db, move_name, game.version) {
       Ok(m) => m
       Err(e) => {
+        match cache_opt {
+          Some(c) => @damage_cache.close(c)
+          None => ()
+        }
         println("Error: " + e)
         return
       }
@@ -906,7 +1293,21 @@ fn run_damage(
       },
     }
     let result = @damage.calc_damage(input)
-    println(@cli.format_damage(result, input, format))
+    let output = @cli.format_damage(result, input, format)
+    match (cache_opt, cache_key_opt) {
+      (Some(cache), Some(key)) => {
+        match @damage_cache.put(cache, key, output) {
+          Ok(_) => ()
+          Err(e) =>
+            pkdx_eprintln(
+              @db.to_c_bytes("damage_cache: put failed: " + e),
+            )
+        }
+        @damage_cache.close(cache)
+      }
+      _ => ()
+    }
+    println(output)
   })
 }
 
@@ -1623,11 +2024,38 @@ fn cmd_select() -> @admiral.CommandDef {
 ///|
 fn run_select_cmd() -> Unit {
   let raw = read_stdin_json()
-  let out = try @payoff.run_select(raw) catch {
+  // Open the L2 damage cache once so the SwitchingGame DP inside
+  // `run_select` can reuse 16-roll results from previous nash sessions.
+  // Failure to open is non-fatal — we just fall back to L1-only behavior.
+  let disk = match
+    @damage_cache.open_or_init(
+      resolve_damage_cache_path(),
+      pkdx_version,
+      @migrate.latest_migration_name(),
+    ) {
+    Ok(c) => Some(c)
+    Err(e) => {
+      pkdx_eprintln(
+        @db.to_c_bytes(
+          "damage_cache: open failed, select will run without L2: " + e,
+        ),
+      )
+      None
+    }
+  }
+  let out = try @payoff.run_select(raw, disk~) catch {
     err => {
+      match disk {
+        Some(c) => @damage_cache.close(c)
+        None => ()
+      }
       exit_error(nash_cli_error_message(err))
       return
     }
+  }
+  match disk {
+    Some(c) => @damage_cache.close(c)
+    None => ()
   }
   println(out)
 }
