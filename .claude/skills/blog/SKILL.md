@@ -138,21 +138,22 @@ http://localhost:4321 で既に何かがリッスンしています。
 
 | # | 質問 | header | オプション | multiSelect |
 |---|------|--------|-----------|-------------|
-| 1 | ローカルで dev プレビューしながら作業しますか？ (Astro の hot reload で編集結果がリアルタイムに反映されます) | プレビュー | 起動しない(default, desc: 編集だけ進めて、ブラウザで確認しない), 起動する(desc: bun run dev をバックグラウンド起動。Phase G 終了時に停止確認) | false |
+| 1 | ローカルで dev プレビューしながら作業しますか？ (Astro の hot reload で編集結果がリアルタイムに反映されます) | プレビュー | 起動しない(default, desc: 編集だけ進めて、ブラウザで確認しない), 起動する(desc: preview_start で site を起動。Phase G 終了時に停止確認) | false |
 
 「起動しない」を選ばれた場合はそのまま該当 Phase へ。
 
-#### 0-4-2: dev server をバックグラウンド起動
+#### 0-4-2: dev server を preview_start で起動
 
-「起動する」を選ばれた場合、**Bash tool に `run_in_background: true` を渡して**以下を実行:
+「起動する」を選ばれた場合、**`mcp__Claude_Preview__preview_start` ツール**を `name: "site"` で呼び出す。生 Bash で `bun run dev &` を回さない (プロセス管理が手動になり Phase G-7 の停止が不安定になるため、preview_start に一任する)。
 
-```bash
-cd "$REPO_ROOT/site"
-bun install >/dev/null 2>&1
-bun run dev
+前提として `.claude/launch.json` に `site` エントリが必要 (この repo では既に配置済み)。`preview_start` は launch.json の `runtimeExecutable` / `runtimeArgs` / `cwd` / `port` を読んで `bun run dev` を `site/` 配下で起動する。
+
+```
+preview_start(name="site")
+→ { serverId, port: 4321, name: "site", reused: <bool> }
 ```
 
-Bash tool が返す `bash_id` を**セッション内変数 `DEV_BASH_ID` として記憶**する (Phase G-7 で停止する際に必要)。`run_in_background: true` を付けないと dev server プロセスが永続化してメインの Bash tool が無限に応答待ちになるため、必ず付けること。
+`serverId` を**セッション内変数 `DEV_PREVIEW_ID` として記憶**する (Phase G-7 で停止する際に必要)。
 
 起動後、最大 15 秒ほど待ってから http://localhost:4321/pkdx/ がリッスンし始めたかを以下で確認:
 
@@ -166,16 +167,16 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 done
 ```
 
-起動できたら通常メッセージで案内:
+起動できたら通常メッセージで案内 (Astro は `astro.config.mjs` で `base: "/pkdx/"` を設定しているため、ルート `/` は 404 になる。プレビューを開くときは必ず `/pkdx/` 付きで案内する):
 
 ```
 ✓ dev server を起動しました
-  URL: http://localhost:4321/pkdx/
+  URL: http://localhost:4321/pkdx/   ← base path /pkdx/ を必ず付けること (ルートは 404)
   編集するたびに自動でブラウザに反映されます (要リロード)
   Phase G 完了時に停止確認します。
 ```
 
-15 秒以内に起動しなかった場合は、`bash_id` の出力を読んでエラーを表示し、`DEV_BASH_ID` を破棄してから該当 Phase へ進む (プレビューなしで作業継続)。
+15 秒以内に起動しなかった場合は、preview_start の戻り値や `mcp__Claude_Preview__preview_logs` でエラーを確認し、`DEV_PREVIEW_ID` を破棄してから該当 Phase へ進む (プレビューなしで作業継続)。
 
 ---
 
@@ -792,26 +793,27 @@ Actions の進行状況は次のコマンドで確認できます:
 
 ### G-7: dev server の停止確認
 
-Phase 0-4 で dev server を起動済み (`DEV_BASH_ID` がある) 場合のみ実行する。未起動なら本ステップを skip。
+Phase 0-4 で dev server を起動済み (`DEV_PREVIEW_ID` がある) 場合のみ実行する。未起動なら本ステップを skip。`DEV_PREVIEW_ID` を覚え忘れていた場合は `mcp__Claude_Preview__preview_list` で `name: "site"` の `serverId` を解決する。
 
 **AskUserQuestion** (1問):
 
 | # | 質問 | header | オプション | multiSelect |
 |---|------|--------|-----------|-------------|
-| 1 | dev server を停止しますか？ (起動したまま残すと、別ターミナルから引き続き http://localhost:4321/pkdx/ で確認できます) | dev停止 | 停止する(default, desc: バックグラウンド起動した dev server を kill する), 残しておく(desc: 起動したまま skill を終了。手動で停止する場合は別ターミナルで該当プロセスを kill) | false |
+| 1 | dev server を停止しますか？ (起動したまま残すと、別ターミナルから引き続き http://localhost:4321/pkdx/ で確認できます) | dev停止 | 停止する(default, desc: preview_start で起動した dev server を停止する), 残しておく(desc: 起動したまま skill を終了。手動で停止する場合は preview_list / preview_stop) | false |
 
-「停止する」を選ばれた場合、Phase 0-4 で記憶した background bash の id を **TaskStop tool** に `task_id` として渡して停止する (`run_in_background: true` で起動した bash は TaskStop で確実に止まる。素の `kill` での PID 取得は不安定なので使わない)。停止後に通常メッセージで「✓ dev server を停止しました」と報告。
+「停止する」を選ばれた場合、`mcp__Claude_Preview__preview_stop` ツールを `serverId: "<DEV_PREVIEW_ID>"` で呼び出して停止する (preview_start で起動したサーバーは preview_stop で確実に止まる。`kill` での PID 取得は不安定なので使わない)。停止後に通常メッセージで「✓ dev server を停止しました」と報告。
 
 「残しておく」を選ばれた場合は通常メッセージで案内:
 
 ```
 dev server は起動したままです: http://localhost:4321/pkdx/
 停止する場合は以下のいずれか:
+  - mcp__Claude_Preview__preview_list で serverId を確認して preview_stop を呼ぶ
   - Claude Code の /bashes コマンドで該当 shell を kill
   - lsof -nP -iTCP:4321 -sTCP:LISTEN で PID を確認して kill <PID>
 ```
 
-`DEV_BASH_ID` をクリアして skill 終了。
+`DEV_PREVIEW_ID` をクリアして skill 終了。
 
 ---
 
