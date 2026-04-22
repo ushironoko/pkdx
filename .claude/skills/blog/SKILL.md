@@ -308,7 +308,37 @@ published: false
   本文を編集するには box/blog/<slug>.md を直接エディタで開いてください。
 ```
 
-続いて [Phase G: 反映確認](#phase-g-反映確認) に進む（`action = "create"`, `slug = <slug>`）。
+続いて A-6 （dev server 再起動）を判定してから [Phase G: 反映確認](#phase-g-反映確認) に進む（`action = "create"`, `slug = <slug>`）。
+
+### A-6: dev server 再起動（新規ファイル反映のため）
+
+Astro の content collection (glob loader) は既存ファイルの Edit には hot reload で追従するが、**新規追加された md は dev server を再起動するまで `/pkdx/blog/<slug>/` ルートが生成されない**（`[...slug].astro` の getStaticPaths が dev 起動時のスナップショットで固定されるため）。従って Phase A で新規作成した直後は、プレビュー中の dev server を必ず再起動してから Phase G の反映確認へ進む。
+
+**skip 条件**: `DEV_PREVIEW_ID` が未設定（Phase 0-4 で dev server を起動していない / 起動失敗した）場合は本ステップを skip。ユーザー確認も挟まず次へ進む。
+
+`DEV_PREVIEW_ID` が設定されている場合のみ、以下を**無確認で自動実行**する（ユーザーは Phase 0-4 でプレビュー前提の作業に同意済みのため、再起動ごとに問い合わせると煩わしい）:
+
+```
+mcp__Claude_Preview__preview_stop(serverId: "<DEV_PREVIEW_ID>")
+mcp__Claude_Preview__preview_start(name: "site")
+→ 戻り値の serverId で DEV_PREVIEW_ID を上書き
+```
+
+`preview_start` 直後は Phase 0-4-2 と同様に最大 15 秒まで `curl -fsS http://localhost:4321/pkdx/` でリッスン確認する。起動できたら通常メッセージで以下を報告:
+
+```
+✓ dev server を再起動しました (新規記事ルート反映のため)
+  URL: http://localhost:4321/pkdx/blog/<slug>/
+  published: false の場合はビルド対象外となるため /pkdx/blog/ 一覧には出ませんが、
+  URL 直打ちでプレビューできます。
+```
+
+再起動に失敗した場合（`preview_start` がエラー / 15 秒タイムアウト）は `DEV_PREVIEW_ID` をクリアし、通常メッセージで以下を出してから Phase G へ進む（Phase G-7 の停止確認は skip される）:
+
+```
+⚠ dev server の再起動に失敗しました。手動で再起動してください:
+  mcp__Claude_Preview__preview_list → preview_stop → preview_start
+```
 
 ---
 
