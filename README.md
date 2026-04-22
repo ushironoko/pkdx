@@ -11,6 +11,7 @@ Claude Code / Codex と対話しながらチームを組んだり、ポケモン
 - **耐久指数最適化**: H/B/D の努力値配分を最適化。HP条件（きのみ/オボン/たべのこし）・物理/特殊比重・top-N 候補の指定に対応し、「HBD 値が最大になる配分」を提示する
 - **ポケモン検索**: 名前・タイプ・素早さ・覚えるわざなどの条件でポケモンを検索。技一覧やタイプ相性もすぐ引ける
 - **バトルシミュレーション**: 登録済みのチーム2つを使って、選出から対戦結果までをシミュレーション。最適行動を取り続けた際の勝率を導出
+- **構築記事・ブログ管理**: 登録したバトルチームデータを元に、構築ブログを公開できる。構築に紐づかないブログの作成も可能
 
 ## 対応バージョン
 
@@ -58,6 +59,9 @@ Claude Code / Codex (CLI / デスクトップアプリどちらでも可) をこ
 
 # 対戦シミュレーションをはじめる
 > /nash
+
+# ブログの管理をはじめる
+> /blog
 ```
 
 作成したチーム・型は `./box` 配下に置かれる。手動で編集もできるし、Claude Code / Codex経由で閲覧・編集も可能。
@@ -119,17 +123,7 @@ flowchart LR
     classDef pub fill:#cffafe,stroke:#0e7490,color:#111
 ```
 
-- **書き込み SSoT**: `box/teams/<slug>.meta.json` が構造化データの SSoT。Astro 側が `.meta.json` を読み、同名 `.md` の本文 (matchup_plans 等の自由記述) と合わせてページを組み立てる。
-- **ダメージ計算の添付**: `/calc` で打った計算を `pkdx damage --attach-team ...` で対応する `.meta.json` の `damage_calcs[]` に追記できる。ブログには 16 段階の乱数テーブル・確定数・条件付きでレンダリングされる。
-- **手編集の保護 (edit-lock)**: `box/teams/<slug>.md` の frontmatter に `edited: true` を付けておくと、`pkdx write teams` 再実行で md が上書きされなくなる (`.meta.json` は毎回更新)。強制上書きは `pkdx write teams --force`。
-
 #### 公開対象・編集ポリシー
-
-- `box/teams/*.md` + `box/teams/*.meta.json` → 構築記事ページとしてレンダリング (役割・タイプ相性・ダメ計・選出プランが自動表示される)
-- `box/blog/*.md` → 自由記事としてレンダリング。ひな形は `box/blog/TEMPLATE.md.example` を参考にコピーして使う
-- 非公開にしたい場合は該当ファイルの frontmatter に `published: false` を追加
-- 構築 md を手動で書き換えた後、team-builder の再生成で上書きされたくないときは frontmatter に `edited: true` を追加 (`.meta.json` は SSoT のため毎回更新される)
-- `box/site.config.json` でサイト名・著者を設定可能 (`{ "site_name": "...", "author": "...", "enabled": true }`)
 
 カスタムドメイン: `site/public/CNAME` にドメイン名 1 行のファイルを置くと有効化。
 
