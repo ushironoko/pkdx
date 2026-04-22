@@ -1,0 +1,189 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import MemberCard from '../../components/MemberCard.astro';
+import MemberDetail from '../../components/MemberDetail.astro';
+import CoverageChart from '../../components/CoverageChart.astro';
+import DefenseMatrix from '../../components/DefenseMatrix.astro';
+import DamageCalcTable from '../../components/DamageCalcTable.astro';
+import MatchupPlans from '../../components/MatchupPlans.astro';
+import { isPublishableTeam } from '../../content.config';
+import { loadTeamMeta, type DamageCalc, type TeamMember } from '../../lib/team-meta';
+
+export async function getStaticPaths() {
+  const entries = (await getCollection('teams')).filter(isPublishableTeam);
+  return entries.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry, meta: loadTeamMeta(entry.id) },
+  }));
+}
+
+const { entry, meta } = Astro.props;
+const formatLabel = entry.data.battle_format === 'doubles' ? 'ダブル' : 'シングル';
+const dateStr = entry.data.date.toISOString().slice(0, 10);
+
+function calcsForMember(calcs: DamageCalc[], member: TeamMember): DamageCalc[] {
+  return calcs.filter(
+    (c) => c.attacker.name === member.name || c.defender.name === member.name,
+  );
+}
+
+const members = meta?.members ?? [];
+const allCalcs = meta?.damage_calcs ?? [];
+const assignedNames = new Set(members.map((m) => m.name));
+const unassignedCalcs = allCalcs.filter(
+  (c) => !assignedNames.has(c.attacker.name ?? '') && !assignedNames.has(c.defender.name ?? ''),
+);
+---
+<BaseLayout title={entry.data.title} description={entry.data.description}>
+  <article class="team-article" transition:name={`team-card-${entry.id}`}>
+    <header class="hero">
+      <p class="muted small hero-date">
+        <time datetime={dateStr}>{dateStr}</time>
+      </p>
+      <h1>{entry.data.title}</h1>
+      <div class="hero-meta">
+        <span class="tag">{formatLabel}</span>
+        <span class="tag">{entry.data.mechanics}</span>
+        {entry.data.regulation && <span class="tag">{entry.data.regulation}</span>}
+        <span class="tag">{entry.data.version}</span>
+      </div>
+      {entry.data.description && <p class="hero-desc">{entry.data.description}</p>}
+    </header>
+
+    {meta?.concept && (
+      <section class="chapter" aria-labelledby="chapter-concept">
+        <h2 id="chapter-concept">構築コンセプト</h2>
+        <p class="concept-body">{meta.concept}</p>
+      </section>
+    )}
+
+    {members.length > 0 && (
+      <section class="chapter" aria-labelledby="chapter-team">
+        <h2 id="chapter-team">チーム</h2>
+        <div class="team-list">
+          {members.map((m) => <MemberCard member={m} />)}
+        </div>
+
+        {meta && <CoverageChart rows={meta.coverage} />}
+        {meta && <DefenseMatrix rows={meta.defense_matrix} members={meta.members} />}
+
+        {unassignedCalcs.length > 0 && (
+          <DamageCalcTable calcs={unassignedCalcs} heading="共通ダメージ計算" headingLevel={3} />
+        )}
+      </section>
+    )}
+
+    {members.length > 0 && (
+      <section class="chapter" aria-labelledby="chapter-details">
+        <h2 id="chapter-details">個別解説</h2>
+        {members.map((m, i) => (
+          <MemberDetail member={m} index={i} calcs={calcsForMember(allCalcs, m)} />
+        ))}
+      </section>
+    )}
+
+    {meta && ((meta.primary_selection?.members?.length ?? 0) > 0
+              || (meta.alternate_selection?.members?.length ?? 0) > 0
+              || meta.matchup_plans.length > 0) && (
+      <section class="chapter" aria-labelledby="chapter-selections">
+        <h2 id="chapter-selections">選出パターン</h2>
+        {(meta.primary_selection?.members?.length ?? 0) > 0 && (
+          <div class="selection-plan">
+            <h3>表選出</h3>
+            <p class="selection-members">
+              {meta.primary_selection!.members.join(' / ')}
+            </p>
+            {meta.primary_selection!.note && (
+              <p class="selection-note">{meta.primary_selection!.note}</p>
+            )}
+          </div>
+        )}
+        {(meta.alternate_selection?.members?.length ?? 0) > 0 && (
+          <div class="selection-plan">
+            <h3>裏選出</h3>
+            <p class="selection-members">
+              {meta.alternate_selection!.members.join(' / ')}
+            </p>
+            {meta.alternate_selection!.note && (
+              <p class="selection-note">{meta.alternate_selection!.note}</p>
+            )}
+          </div>
+        )}
+        {(meta.primary_selection?.members?.length ?? 0) === 0
+          && (meta.alternate_selection?.members?.length ?? 0) === 0
+          && meta.matchup_plans.length > 0 && (
+          <MatchupPlans plans={meta.matchup_plans} heading="" />
+        )}
+      </section>
+    )}
+
+    {entry.data.tags.length > 0 && (
+      <footer class="tags-footer">
+        {entry.data.tags.map((t) => <span class="tag">#{t}</span>)}
+      </footer>
+    )}
+  </article>
+</BaseLayout>
+
+<style>
+  .team-article { display: flex; flex-direction: column; }
+  .team-article :global(p) { line-height: 1.95; }
+  .hero { padding: 1rem 0 1rem 0; }
+  .hero h1 { margin: 0.25rem 0; }
+  .hero-date { margin: 0; }
+  .hero-meta { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+  .hero-desc { margin-top: 0.5rem; color: var(--c-text-muted); }
+  .chapter {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding-bottom: 60px;
+  }
+  .chapter > h2 {
+    margin: 0;
+    padding-bottom: 0.25rem;
+    border-bottom: 2px solid var(--c-text);
+  }
+  .team-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  @media (min-width: 720px) {
+    .team-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+  }
+  .concept-body {
+    margin: 0;
+    white-space: pre-wrap;
+  }
+  .selection-plan {
+    padding-bottom: 1.25rem;
+  }
+  .selection-plan + .selection-plan {
+    padding-top: 1rem;
+    border-top: 1px solid var(--c-border);
+  }
+  .selection-plan > h3 {
+    margin: 0 0 0.25rem 0;
+  }
+  .selection-members {
+    margin: 0.25rem 0;
+    font-weight: 600;
+  }
+  .selection-note {
+    margin: 0.5rem 0 0;
+    white-space: pre-wrap;
+  }
+  .tags-footer {
+    border-top: 1px solid var(--c-border);
+    padding-top: 1rem;
+    display: flex;
+    gap: 0.25rem;
+    flex-wrap: wrap;
+  }
+</style>

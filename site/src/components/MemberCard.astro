@@ -1,0 +1,307 @@
+---
+import type { TeamMember } from '../lib/team-meta';
+import { resolvePokemonImage } from '../lib/pokemon-image';
+
+interface Props {
+  member: TeamMember;
+}
+
+const { member } = Astro.props;
+const imageUrl = resolvePokemonImage(member.name);
+const statsOrder: Array<['h' | 'a' | 'b' | 'c' | 'd' | 's', string]> = [
+  ['h', 'H'],
+  ['a', 'A'],
+  ['b', 'B'],
+  ['c', 'C'],
+  ['d', 'D'],
+  ['s', 'S'],
+];
+const typeKeyMap: Record<string, string> = {
+  ノーマル: 'normal', ほのお: 'fire', みず: 'water', でんき: 'electric',
+  くさ: 'grass', こおり: 'ice', かくとう: 'fighting', どく: 'poison',
+  じめん: 'ground', ひこう: 'flying', エスパー: 'psychic', むし: 'bug',
+  いわ: 'rock', ゴースト: 'ghost', ドラゴン: 'dragon', あく: 'dark',
+  はがね: 'steel', フェアリー: 'fairy',
+};
+const typeKey = (t: string) => typeKeyMap[t] ?? 'normal';
+
+type StatKey = 'h' | 'a' | 'b' | 'c' | 'd' | 's';
+const natureModMap: Record<string, { up: StatKey; down: StatKey }> = {
+  さみしがり: { up: 'a', down: 'b' },
+  いじっぱり: { up: 'a', down: 'c' },
+  やんちゃ:   { up: 'a', down: 'd' },
+  ゆうかん:   { up: 'a', down: 's' },
+  ずぶとい:   { up: 'b', down: 'a' },
+  わんぱく:   { up: 'b', down: 'c' },
+  のうてんき: { up: 'b', down: 'd' },
+  のんき:     { up: 'b', down: 's' },
+  ひかえめ:   { up: 'c', down: 'a' },
+  おっとり:   { up: 'c', down: 'b' },
+  うっかりや: { up: 'c', down: 'd' },
+  れいせい:   { up: 'c', down: 's' },
+  おだやか:   { up: 'd', down: 'a' },
+  おとなしい: { up: 'd', down: 'b' },
+  しんちょう: { up: 'd', down: 'c' },
+  なまいき:   { up: 'd', down: 's' },
+  おくびょう: { up: 's', down: 'a' },
+  せっかち:   { up: 's', down: 'b' },
+  ようき:     { up: 's', down: 'c' },
+  むじゃき:   { up: 's', down: 'd' },
+};
+const natureMod = member.nature ? natureModMap[member.nature] : undefined;
+const statMod = (key: StatKey): '' | 'stats-up' | 'stats-down' => {
+  if (!natureMod) return '';
+  if (key === natureMod.up) return 'stats-up';
+  if (key === natureMod.down) return 'stats-down';
+  return '';
+};
+
+const types = member.types ?? [];
+const primaryKey = typeKey(types[0] ?? 'ノーマル');
+const secondaryKey = typeKey(types[1] ?? types[0] ?? 'ノーマル');
+const isDual = types.length >= 2 && types[0] !== types[1];
+const typeCssVars = isDual
+  ? `--type-primary: var(--type-${primaryKey}); --type-secondary: var(--type-${secondaryKey});`
+  : `--type-primary: var(--type-${primaryKey});`;
+---
+<article
+  class:list={['member-card', isDual ? 'dual-type' : 'single-type']}
+  style={typeCssVars}
+>
+  <div class="member-inner">
+    <header class="member-head">
+      <div class="member-summary">
+        <div class="member-title">
+          <h3 class="member-name">{member.name}</h3>
+        </div>
+        <dl class="member-meta">
+          {member.ability && <><dt>特性</dt><dd class="meta-strong">{member.ability}</dd></>}
+          {member.item && <><dt>持ち物</dt><dd class="meta-strong">{member.item}</dd></>}
+          {member.nature && <><dt>性格</dt><dd>{member.nature}</dd></>}
+        </dl>
+      </div>
+      {imageUrl && (
+        <img
+          class="member-image"
+          src={imageUrl}
+          alt={member.name}
+          width="120"
+          height="120"
+          loading="lazy"
+          decoding="async"
+        />
+      )}
+    </header>
+
+    {member.stat_points && (
+      <section class="stats-section">
+        <h4>SP</h4>
+        <div class="stats-grid">
+          {statsOrder.map(([key, label]) => (
+            <div class:list={['stats-cell', 'stats-head', statMod(key)]}>{label}</div>
+          ))}
+          {statsOrder.map(([key]) => (
+            <div class:list={['stats-cell', statMod(key)]}>{member.stat_points?.[key] ?? '-'}</div>
+          ))}
+        </div>
+      </section>
+    )}
+
+    {member.actual_stats && (
+      <section class="stats-section">
+        <h4>実数値</h4>
+        <div class="stats-grid">
+          {statsOrder.map(([key, label]) => (
+            <div class:list={['stats-cell', 'stats-head', statMod(key)]}>{label}</div>
+          ))}
+          {statsOrder.map(([key]) => (
+            <div class:list={['stats-cell', statMod(key)]}>{member.actual_stats?.[key] ?? '-'}</div>
+          ))}
+        </div>
+      </section>
+    )}
+
+    {member.moves.length > 0 && (
+      <section class="moves-section">
+        <h4>技</h4>
+        <ul class="moves-list">
+          {member.moves.map((m) => (
+            <li style={`border-left-color: var(--type-${typeKey(m.type)})`}>
+              <span class="move-name">{m.name}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )}
+  </div>
+</article>
+
+<style>
+  .member-card {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    padding: 1px;
+    border-radius: 20px;
+    corner-shape: superellipse(1.5);
+  }
+  .member-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    padding: 12px;
+    border: solid 1px black;
+    border-radius: 20px;
+    corner-shape: superellipse(1.5);
+  }
+  :global(:root[data-theme="light"]) .member-inner {
+    background: rgba(0, 0, 0, 0.7);
+    border-color: transparent;
+  }
+  .member-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.5;
+    z-index: -1;
+  }
+  :global(:root[data-theme="light"]) .member-card::before {
+    opacity: 0.7;
+  }
+  /* `\` ライン (135deg = 左上→右下) で色を区切る。複合はくっきり四角構成、
+     単タイプは下三角のみ色 + 上に向かって blur させる。 */
+  .member-card.dual-type::before {
+    background: linear-gradient(
+      135deg,
+      var(--type-primary) 0 30%,
+      var(--type-secondary) 70% 100%
+    );
+  }
+  .member-card.single-type::before {
+    background: linear-gradient(
+      135deg,
+      transparent 10% 30%,
+      var(--type-primary) 70% 100%
+    );
+  }
+  .member-head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    align-items: start;
+  }
+  .member-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .member-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .member-name {
+    margin: 0;
+    font-size: 1.3rem;
+  }
+  .member-image {
+    width: 120px;
+    height: 120px;
+    object-fit: cover;
+    border-radius: 16px;
+    display: block;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  @media (max-width: 600px) {
+    .member-head {
+      grid-template-columns: 1fr;
+    }
+    .member-image {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 1 / 1;
+      max-width: 220px;
+      margin: 0 auto;
+    }
+  }
+  .member-meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 0.75rem;
+    margin: 0;
+    font-size: 0.9rem;
+    align-items: center;
+  }
+  .member-meta dt {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 0.8rem;
+  }
+  .member-meta dd { margin: 0; }
+  .member-meta dd.meta-strong {
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+  }
+  .stats-section h4, .moves-section h4 {
+    margin: 0 0 0.35rem 0;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.75);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    font-size: 0.85rem;
+    border: 1px solid var(--c-border);
+  }
+  .stats-cell {
+    text-align: center;
+    white-space: nowrap;
+    padding: 0.35rem 0.4rem;
+    border-right: 1px solid var(--c-border);
+    border-bottom: 1px solid var(--c-border);
+  }
+  .stats-cell:nth-child(6n) {
+    border-right: none;
+  }
+  .stats-cell:nth-last-child(-n+6) {
+    border-bottom: none;
+  }
+  .stats-cell.stats-head {
+    color: rgba(255, 255, 255, 0.75);
+    font-weight: 600;
+  }
+  .stats-cell.stats-up {
+    color: #ff7a7a;
+  }
+  .stats-cell.stats-up.stats-head {
+    color: #ff7a7a;
+  }
+  .stats-cell.stats-down {
+    color: #7aa7ff;
+  }
+  .stats-cell.stats-down.stats-head {
+    color: #7aa7ff;
+  }
+  .moves-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.4rem;
+  }
+  .moves-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    background: rgba(255, 255, 255, 0.1);
+    border-left: 2px solid transparent;
+  }
+  .move-name { flex: 1; }
+  .move-meta { font-size: 0.75rem; white-space: nowrap; }
+</style>

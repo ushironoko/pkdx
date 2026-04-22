@@ -152,14 +152,31 @@ cd $REPO_ROOT && git diff --name-only --diff-filter=U
 
 コンフリクトファイルを一覧表示し:
 
-- `box/` 内のコンフリクト → ユーザー側(ours)を優先:
+- `box/` 内のコンフリクト → ユーザー側(ours)を優先 (構築・育成・ブログ記事・サイト設定はユーザー所有):
   ```bash
   git checkout --ours box/<path> && git add box/<path>
   ```
+  対象例: `box/teams/**`, `box/pokemons/**`, `box/blog/**`, `box/site.config.json`
 
 - `.claude/skills/` 内のコンフリクト → 更新元(theirs)を優先:
   ```bash
   git checkout --theirs .claude/skills/<path> && git add .claude/skills/<path>
+  ```
+
+- `site/**` のコンフリクト → 更新元(theirs)を優先 (Astro サイト本体は upstream 管理):
+  ```bash
+  git checkout --theirs site/<path> && git add site/<path>
+  ```
+  例外: `site/public/CNAME` はユーザーがカスタムドメイン用に追加する想定なので、存在すれば ours を保持する。
+
+- `.github/workflows/**` のコンフリクト → 更新元(theirs)を優先 (CI/CD は upstream 管理):
+  ```bash
+  git checkout --theirs .github/workflows/<path> && git add .github/workflows/<path>
+  ```
+
+- `box/blog/TEMPLATE.md.example` のコンフリクト → 更新元(theirs)を優先 (ひな形は upstream が更新):
+  ```bash
+  git checkout --theirs box/blog/TEMPLATE.md.example && git add box/blog/TEMPLATE.md.example
   ```
 
 - その他のコンフリクト → ユーザーに判断を求める:
@@ -219,6 +236,20 @@ cd $REPO_ROOT && bin/pkdx migrate --resync
 ```
 
 スキップした場合（例: `pkdx tools` 更新を skip したケース）は、この step も実行不要。
+
+### 2-5: box meta.json 自動マイグレーション
+
+upstream に `pkdx convert meta` 系の schema 変更が含まれていた場合、`./setup.sh` を走らせると `box/pokemons/**/*.meta.json` と `box/teams/**/*.meta.json` を新 schema へ一括変換する。元ファイルは `<path>.bak` として 1 回だけバックアップされ、既に `.bak` があるファイルは上書きされない。
+
+```bash
+cd $REPO_ROOT && ./setup.sh
+```
+
+`setup.sh` の `[4.5/5]` ステップが該当。個別に変換したい場合は以下:
+
+```bash
+$REPO_ROOT/bin/pkdx convert meta --in <path>.meta.json --in-place
+```
 
 ## Phase 3: Stash復元
 

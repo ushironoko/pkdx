@@ -43,7 +43,7 @@ pub fn all_natures() -> Array[Nature] {
     // Def+ (4)
     { name_ja: "ずぶとい", name_en: "Bold", up: Some(Def), down: Some(Atk) },
     {
-      name_ja: "わ���ぱく",
+      name_ja: "わんぱく",
       name_en: "Impish",
       up: Some(Def),
       down: Some(SpA),

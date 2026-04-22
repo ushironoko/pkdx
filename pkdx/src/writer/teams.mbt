@@ -416,10 +416,42 @@ fn build_matchup_plans(
 }
 
 ///|
+/// 表選出 / 裏選出 を「### 表選出 | ### 裏選出」の 2 セクションに分けて emit。
+/// members が空 (未入力) の場合そのセクションは省略する。
+fn build_selection_plan_block(
+  plan : Json,
+  heading_text : String,
+) -> Array[@markdown.Block] {
+  let blocks : Array[@markdown.Block] = []
+  let members = json_string_array(plan, "members")
+  if members.length() == 0 {
+    return blocks
+  }
+  blocks.push(heading(3, heading_text))
+  let sep = " + "
+  let members_str = members.join(sep)
+  let items : Array[String] = ["選出: \{members_str}"]
+  blocks.push(bullet_list(items))
+  let note = json_string(plan, "note")
+  if note.length() > 0 {
+    blocks.push(
+      @markdown.Block::Paragraph(
+        children=[text(note)],
+        span=s,
+        leading_trivia=t,
+        trailing_trivia=t,
+      ),
+    )
+  }
+  blocks
+}
+
+///|
 pub fn build_team_document(
   json : Json,
   axis : String,
   date : String,
+  publish~ : Bool = false,
 ) -> @markdown.Document {
   let blocks : Array[@markdown.Block] = []
   let battle_format = json_string(json, "battle_format")
@@ -436,6 +468,18 @@ pub fn build_team_document(
       "ゲームバージョン: \{version}",
     ]),
   )
+  let concept = json_string(json, "concept")
+  if concept.length() > 0 {
+    blocks.push(heading(2, "構築コンセプト"))
+    blocks.push(
+      @markdown.Block::Paragraph(
+        children=[text(concept)],
+        span=s,
+        leading_trivia=t,
+        trailing_trivia=t,
+      ),
+    )
+  }
   blocks.push(heading(2, "チーム"))
   blocks.push(build_members_table(members))
   if has_any_build_data(members) {
@@ -454,21 +498,160 @@ pub fn build_team_document(
     blocks.push(heading(2, "防御相性マトリクス"))
     blocks.push(build_defense_table(defense, members))
   }
+  let empty_obj : Json = ({} : Map[String, Json]).to_json()
+  let primary_sel = match json {
+    Object(root) =>
+      match root.get("primary_selection") {
+        Some(v) => v
+        None => empty_obj
+      }
+    _ => empty_obj
+  }
+  let alternate_sel = match json {
+    Object(root) =>
+      match root.get("alternate_selection") {
+        Some(v) => v
+        None => empty_obj
+      }
+    _ => empty_obj
+  }
+  let primary_blocks = build_selection_plan_block(primary_sel, "表選出")
+  let alternate_blocks = build_selection_plan_block(
+    alternate_sel, "裏選出",
+  )
+  if primary_blocks.length() > 0 || alternate_blocks.length() > 0 {
+    blocks.push(heading(2, "選出パターン"))
+    blocks.push_iter(primary_blocks.iter())
+    blocks.push_iter(alternate_blocks.iter())
+  }
+  // 旧 schema 互換: primary/alternate が空で matchup_plans があれば従来の
+  // 「vs 相手」カードを emit (既存 meta.json 取り込み向け)。
   let plans = json_array(json, "matchup_plans")
-  if plans.length() > 0 {
+  let has_new = primary_blocks.length() > 0 || alternate_blocks.length() > 0
+  if not(has_new) && plans.length() > 0 {
     blocks.push(heading(2, "選出パターン"))
     blocks.push_iter(build_matchup_plans(plans, battle_format).iter())
   }
-  let strengths = json_string_array(json, "strengths")
-  if strengths.length() > 0 {
-    blocks.push(heading(2, "構築の強み"))
-    blocks.push(bullet_list(strengths))
+  {
+    frontmatter: Some(build_team_frontmatter(json, axis, date, publish~)),
+    children: blocks,
+    span: s,
   }
-  let weaknesses = json_string_array(json, "weaknesses")
-  if weaknesses.length() > 0 {
-    blocks.push(heading(2, "構築の弱み・注意点"))
-    blocks.push(bullet_list(weaknesses))
+}
+
+///|
+/// Build a YAML frontmatter for the generated team markdown.
+///
+/// The block_parser in mizchi/markdown only understands `key: value` lines and
+/// strips surrounding quotes, so we emit one scalar per line and rely on
+/// downstream Astro (gray-matter) for proper YAML parsing of flow arrays.
+pub fn build_team_frontmatter(
+  json : Json,
+  axis : String,
+  date : String,
+  publish~ : Bool = false,
+) -> @markdown.Frontmatter {
+  let battle_format = json_string(json, "battle_format")
+  let mechanics = json_string(json, "mechanics")
+  let version = json_string(json, "version")
+  let regulation = json_string(json, "regulation")
+  let members = json_array(json, "members")
+  let member_names = members.map(fn(m) -> String { json_string(m, "name") })
+  let title = "\{axis}軸構築 - \{date}"
+  let entries : Array[(String, String)] = []
+  let buf = StringBuilder::new()
+  fn add_quoted(key : String, value : String) -> Unit {
+    entries.push((key, value))
+    buf.write_string(key)
+    buf.write_string(": ")
+    buf.write_string(yaml_escape_double_quoted(value))
+    buf.write_char('\n')
   }
 
-  { frontmatter: None, children: blocks, span: s }
+  fn add_plain(key : String, value : String) -> Unit {
+    entries.push((key, value))
+    buf.write_string(key)
+    buf.write_string(": ")
+    buf.write_string(value)
+    buf.write_char('\n')
+  }
+
+  add_quoted("title", title)
+  add_quoted("axis", axis)
+  add_plain("date", date)
+  add_plain("battle_format", battle_format)
+  add_quoted("mechanics", mechanics)
+  add_plain("version", version)
+  if regulation.length() > 0 {
+    add_quoted("regulation", regulation)
+  }
+  let members_value = yaml_string_array(member_names)
+  add_plain("members", members_value)
+  add_plain("tags", "[]")
+  add_plain("edited", "false")
+  // `published: false` を既定にして、構築を意図せず公開しない。`--publish` で
+  // `true` に書き換わる。team-builder Phase 8 の「構築ブログで公開するか」
+  // 質問で「はい」が選ばれた時のみ build_team_document(publish=true) が呼ばれる。
+  let published_value = if publish { "true" } else { "false" }
+  add_plain("published", published_value)
+  add_plain("generated_by", "team-builder")
+  add_plain("schema_version", "1")
+  { raw: buf.to_string(), entries, span: s }
+}
+
+///|
+/// Return true when the given markdown text carries a frontmatter with
+/// `edited: true`. Unlocked on: missing frontmatter, missing `edited` key,
+/// non-literal-"true" values, and parse failures.
+pub fn has_edit_lock(md_text : String) -> Bool {
+  if md_text.length() == 0 {
+    return false
+  }
+  let result = @markdown.parse(md_text)
+  match result.document.frontmatter {
+    Some(fm) => {
+      for entry in fm.entries {
+        let (k, v) = entry
+        if k == "edited" {
+          return v == "true"
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+///|
+/// Escape a string for embedding in a YAML double-quoted scalar.
+/// Only `\` and `"` are escaped — keeping the parser contract simple.
+fn yaml_escape_double_quoted(content : String) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('"')
+  for c in content {
+    match c {
+      '\\' => buf.write_string("\\\\")
+      '"' => buf.write_string("\\\"")
+      _ => buf.write_char(c)
+    }
+  }
+  buf.write_char('"')
+  buf.to_string()
+}
+
+///|
+/// Emit a YAML flow-style string array: `["a", "b"]`.
+fn yaml_string_array(items : Array[String]) -> String {
+  let buf = StringBuilder::new()
+  buf.write_char('[')
+  let mut first = true
+  for item in items {
+    if not(first) {
+      buf.write_string(", ")
+    }
+    first = false
+    buf.write_string(yaml_escape_double_quoted(item))
+  }
+  buf.write_char(']')
+  buf.to_string()
 }

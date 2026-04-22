@@ -38,11 +38,6 @@ fn stats_schema_short(b : @jsonschema.Builder) -> @jsonschema.JsonSchema {
 }
 
 ///|
-fn stats_schema_long(b : @jsonschema.Builder) -> @jsonschema.JsonSchema {
-  stats_schema(b, ["hp", "atk", "def", "spa", "spd", "spe"])
-}
-
-///|
 /// Move schema. When `with_accuracy` is set, adds the `accuracy` property
 /// (required shape for breed / pokemon-build caches).
 fn move_schema(
@@ -85,7 +80,7 @@ fn member_schema(
       "item": b.string(),
       "role": b.string(),
       "moves": b.array(
-        items=move_schema(b, strict~),
+        items=move_schema(b, strict~, with_accuracy=true),
         min_items=moves_min,
         max_items=4,
       ),
@@ -130,14 +125,27 @@ pub fn team_schema(
       ),
       "coverage": b.array(items=b.any()),
       "defense_matrix": b.array(items=b.any()),
+      // Phase 7-3 で決める「表選出」「裏選出」。
+      // primary = チームの基本選出、alternate = 表が対応しきれない相手へのサブプラン。
+      // 構造は FE 側 (site/src/lib/team-meta.ts SelectionPlan) で厳密に検証。
+      "primary_selection": b.any(),
+      "alternate_selection": b.any(),
+      // 旧スキーマ: 仮想敵ごとの選出カード。新スキーマでは primary/alternate に統合
+      // されたため emit しないが、既存の meta.json 取り込み互換のため読み込みは
+      // 受け付ける (空配列 or undefined 可)。
       "matchup_plans": b.array(items=b.any()),
-      "strengths": b.array(items=b.string()),
-      "weaknesses": b.array(items=b.string()),
+      // Phase 7-6 で入力する自由記述の構築コンセプト (記事冒頭に掲載される)。
+      // 未入力なら空文字のまま保存され、FE / writer ともに省略する。
+      "concept": b.string(),
+      // `pkdx damage --attach-team` が追記する計算スナップショット。
+      // ブログ表示用で skill フローでは読まないため schema は緩く (any[])
+      // 保持する — 構造は site/src/lib/team-meta.ts (DamageCalc) 側で検証される。
+      "damage_calcs": b.array(items=b.any()),
       "updated_at": b.string(),
     },
     required=[
       "battle_format", "mechanics", "version", "members", "coverage",
-      "defense_matrix", "matchup_plans", "strengths", "weaknesses",
+      "defense_matrix",
     ],
   )
 }
@@ -147,30 +155,22 @@ pub fn pokemon_schema(
   b : @jsonschema.Builder,
   strict~ : Bool = true,
 ) -> @jsonschema.JsonSchema {
+  let arr_min = if strict { 1 } else { 0 }
   let pokemon_info = b.object(
     properties={
       "name": b.string(),
       "name_en": b.string(),
       "globalNo": b.string(),
-      "type1": b.string(),
-      "type2": b.string(),
-      "base_stats": stats_schema_long(b),
-      "abilities": b.object(
-        properties={
-          "ability1": b.string(),
-          "ability2": b.string(),
-          "dream_ability": b.string(),
-        },
-      ),
+      "types": b.array(items=b.string(), min_items=arr_min, max_items=2),
+      "base_stats": stats_schema_short(b),
+      "abilities": b.array(items=b.string(), min_items=arr_min, max_items=3),
     },
-    required=["name", "type1", "base_stats"],
+    required=["name", "types", "base_stats", "abilities"],
   )
   let moves_min = if strict { 1 } else { 0 }
   let build_info = b.object(
     properties={
       "nature": strict_string(b, strict~),
-      "nature_up": strict_string(b, strict~),
-      "nature_down": strict_string(b, strict~),
       "ability": strict_string(b, strict~),
       "item": strict_string(b, strict~),
       "moves": b.array(
@@ -178,12 +178,13 @@ pub fn pokemon_schema(
         min_items=moves_min,
         max_items=4,
       ),
-      "evs": stats_schema_long(b),
-      "actual_stats": stats_schema_long(b),
+      "stat_points": stats_schema_short(b),
+      "actual_stats": stats_schema_short(b),
+      // member と揃えた自由メモ (Phase 1-Team-Vision の role と対称)
+      "role": nullable(b, b.string()),
     },
     required=[
-      "nature", "nature_up", "nature_down", "ability", "item", "moves", "evs",
-      "actual_stats",
+      "nature", "ability", "item", "moves", "stat_points", "actual_stats",
     ],
   )
   b.object(
