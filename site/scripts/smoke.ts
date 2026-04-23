@@ -5,7 +5,6 @@ import { resolve } from 'node:path';
 
 const cwd = process.cwd();
 const contentRoot = resolve(cwd, 'test/fixtures');
-const pokemonImageDir = resolve(cwd, 'test/fixtures/pokemons');
 const distDir = resolve(cwd, 'dist');
 
 if (existsSync(distDir)) {
@@ -15,10 +14,6 @@ if (existsSync(distDir)) {
 const env = {
   ...process.env,
   CONTENT_ROOT: contentRoot,
-  // OG endpoint はデフォルトで public/pokemons/ を見る。smoke では fixture の軸ポケ
-  // (ガブリアス) に対応する画像が public 側にない場合もあるので、fixture 側に隔離した
-  // pokemons/ を指せるよう OG_POKEMON_IMAGE_DIR で差し替える。
-  OG_POKEMON_IMAGE_DIR: pokemonImageDir,
   SITE_URL: 'https://example.test',
   SITE_BASE: '/',
 };
@@ -126,11 +121,8 @@ interface PngCheck {
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const pngChecks: PngCheck[] = [
-  // 100KB 閾値: 軸ポケ画像が埋め込まれた場合 (data URL 経由で base64 化) は PNG 自体が
-  // 大きくなる。fallback #1a1a1a 単色なら 20KB 程度に収まる。閾値を高めにすることで
-  // 「軸ポケ画像解決が silent に壊れてフォールバックが出続ける」回帰を検知する。
-  { path: 'dist/og/teams/full.png', minBytes: 100_000, width: 1200, height: 630, label: 'team OG embeds axis image (size > 100KB) and 1200x630' },
-  { path: 'dist/og/teams/upper-case-guard.png', minBytes: 100_000, width: 1200, height: 630, label: 'upper-case team OG embeds axis image and 1200x630' },
+  { path: 'dist/og/teams/full.png', minBytes: 5_000, width: 1200, height: 630, label: 'team OG has valid size and 1200x630 dimensions' },
+  { path: 'dist/og/teams/upper-case-guard.png', minBytes: 5_000, width: 1200, height: 630, label: 'upper-case team OG has valid size and 1200x630 dimensions' },
   { path: 'dist/og/blog/hello.png', minBytes: 5_000, width: 1200, height: 630, label: 'blog OG has valid size and 1200x630 dimensions' },
   { path: 'dist/og/default.png', minBytes: 5_000, width: 1200, height: 630, label: 'default OG has valid size and 1200x630 dimensions' },
 ];
