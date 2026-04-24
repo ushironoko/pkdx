@@ -33,6 +33,7 @@ fn e2e_pokemon(
     ability2: "",
     dream_ability: "",
     weight: 50.0,
+    forms: [],
   }
 }
 

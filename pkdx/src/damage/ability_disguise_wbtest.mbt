@@ -23,6 +23,7 @@ fn dg_pokemon(name : String, type1 : String) -> @model.Pokemon {
     ability2: "",
     dream_ability: "",
     weight: 40.0,
+    forms: [],
   }
 }
 
