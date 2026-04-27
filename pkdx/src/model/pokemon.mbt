@@ -18,6 +18,11 @@ pub(all) struct Pokemon {
   // 体重 (kg)。けたぐり/くさむすび/ヘビーボンバー/ヒートスタンプの威力計算に使用。
   // DBに値が無い場合は 0.0。
   weight : Double
+  // 原種 (base form) を引いた時に、同 globalNo で該当 version に存在する
+  // フォーム別ポケモンの一意名一覧 (jpn)。フォーム直引き時および形態無しは
+  // 空配列。SKILL が「原種→forms[]→特化名で再query」の発見フローで使う。
+  // JSON 出力時は空配列ならキーごと省略される (pokemon_to_json 参照)。
+  forms : Array[String]
 } derive(Show, Eq)
 
 ///|

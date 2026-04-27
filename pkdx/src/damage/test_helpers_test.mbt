@@ -25,6 +25,7 @@ fn mk_pokemon(
     ability2: "",
     dream_ability: "",
     weight: 0.0,
+    forms: [],
   }
 }
 
@@ -57,6 +58,7 @@ fn mk_pokemon_typed(
     ability2: "",
     dream_ability: "",
     weight: 0.0,
+    forms: [],
   }
 }
 
@@ -118,6 +120,17 @@ fn mk_damage_input(
   fainted_count? : Int = 0,
   is_double? : Bool = false,
   stat_system? : @model.StatSystem = @model.Standard,
+  wall? : @model.Wall = @model.Wall::NoWall,
+  screen_pierce? : Bool = false,
+  atk_status_condition? : @model.StatusCondition = @model.StatusCondition::None,
+  def_status_condition? : @model.StatusCondition = @model.StatusCondition::None,
+  atk_rank_up_count? : Int = 0,
+  def_rank_up_count? : Int = 0,
+  atk_hp_num? : Int = 2,
+  atk_hp_den? : Int = 2,
+  def_item_removable? : Bool = false,
+  multi_hit_mode? : @model.MultiHit = @model.MultiHit::Auto,
+  disguise_active? : Bool = false,
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -141,5 +154,16 @@ fn mk_damage_input(
     fainted_count,
     is_double,
     stat_system,
+    wall,
+    screen_pierce,
+    atk_status_condition,
+    def_status_condition,
+    atk_rank_up_count,
+    def_rank_up_count,
+    atk_hp_num,
+    atk_hp_den,
+    def_item_removable,
+    multi_hit_mode,
+    disguise_active,
   }
 }

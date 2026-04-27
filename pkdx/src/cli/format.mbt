@@ -42,7 +42,38 @@ fn pokemon_to_json(p : @model.Pokemon) -> String {
   a2 +
   ",\"dream_ability\":" +
   da +
+  (if p.forms.length() > 0 {
+    ",\"forms\":" + forms_to_json(p.forms)
+  } else {
+    ""
+  }) +
   "}"
+}
+
+///|
+/// forms[] を JSON 配列文字列に変換する (呼び出し側で空配列判定済み)。
+fn forms_to_json(forms : Array[String]) -> String {
+  let mut s = "["
+  for i = 0; i < forms.length(); i = i + 1 {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + "\"" + forms[i] + "\""
+  }
+  s + "]"
+}
+
+///|
+/// forms[] を ", " 区切りで連結する (table 表示用)。
+fn forms_joined(forms : Array[String]) -> String {
+  let mut s = ""
+  for i = 0; i < forms.length(); i = i + 1 {
+    if i > 0 {
+      s = s + ", "
+    }
+    s = s + forms[i]
+  }
+  s
 }
 
 ///|
@@ -82,6 +113,11 @@ fn pokemon_to_table(p : @model.Pokemon) -> String {
   (if p.ability2.length() > 0 { " / " + p.ability2 } else { "" }) +
   (if p.dream_ability.length() > 0 {
     " (HA: " + p.dream_ability + ")"
+  } else {
+    ""
+  }) +
+  (if p.forms.length() > 0 {
+    "\nForms: " + forms_joined(p.forms)
   } else {
     ""
   })

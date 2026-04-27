@@ -13,6 +13,8 @@ pub fn migrations() -> Array[Migration] {
     { name: "007_mega_forms", run: run_007 },
     { name: "008_move_meta_ailment", run: run_008 },
     { name: "010_move_meta_posthit", run: run_010 },
+    { name: "011_form_name_aliases", run: run_011 },
+    { name: "012_gender_symbol_aliases", run: run_012 },
   ]
 }
 

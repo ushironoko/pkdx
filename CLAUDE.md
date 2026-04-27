@@ -22,6 +22,11 @@ CLIツール `pkdx` (MoonBit native binary) が pokedex.db への全クエリ、
     例: DBデータからわからない場合は、ユーザーに許可をもらってから `WebSearch` を実行して最新の情報を取得する
 3. ダメージ計算に関しては必ず `pkdx damage` で計算してからフィードバックする。あなたが次に間違えやすい箇所
 4. タイプ相性に関しては必ず `pkdx type-chart` で計算してからフィードバックする。あなたが最も間違える箇所
+5. 性別でステータス・タイプ・特性が異なるポケモン (イダイトウ / イエッサン / パフュートン / ニャオニクス 等) を扱う際は、性別を明示した名前で `pkdx query` する。受け入れ可能な表記:
+    - `イダイトウ（オス）` / `イダイトウ（メス）` (DB の正準形)
+    - `Basculegion (Male)` / `Basculegion (Female)` (英名)
+    - 性別未指定の `イダイトウ` は M base の値 (= ♂側) を返す。これに依存して F 側の値を出してはならない
+    - ユーザー入力が `イダイトウ♂` / `イダイトウ♀` (yakkun.com / ゲーム内表記) で来た場合は `♂ → （オス）` / `♀ → （メス）` に正規化してから `pkdx query` する。`♂` / `♀` 表記は DB に登録されていない
 
 ## Setup
 
@@ -85,9 +90,9 @@ pkdx/                     # MoonBit CLI ツール (native binary)
       cli_nash.mbt, cli_select.mbt, cli_meta.mbt  # JSON/DOT ハンドラ
     migrate/               # pkdx_patch マイグレーションランナー
       runner.mbt            # pkdx_migrations 管理 + トランザクション + 順次適用
-      migrations.mbt        # 登録配列 (001〜010)
+      migrations.mbt        # 登録配列 (001〜012)
       json_util.mbt         # Json アクセサ
-      m001_mega_legendsza.mbt 〜 m010_move_meta_posthit.mbt
+      m001_mega_legendsza.mbt 〜 m012_gender_symbol_aliases.mbt
 
 bin/
   pkdx                    # Unix用ラッパースクリプト (ローカルビルド優先)
@@ -166,6 +171,7 @@ scripts/sync_version.sh
 - **`.claude/skills/team-builder/references/format_rules.md`** — メガ/ダイマ/Z/テラスタル等のメカニクス定義
 - **`.claude/skills/team-builder/references/stat_thresholds.md`** — 種族値ベンチマーク・素早さティア
 - **`.claude/skills/team-builder/references/items_abilities.md`** — 道具・特性の考察用データ
+- **`.claude/skills/calc/references/special_cases.md`** — ダメージ計算の特殊パターン網羅。おやこあい / ばけのかわ / てんねん / Psyshock 系 / シェルアームズ / ボディプレス / せいなるつるぎ / ウェザーボール / 可変威力技 / 壁 / 連続技 / 急所ランク無視 / JSON 出力フィールド。各項目に実装ファイル:行の根拠つき。`pkdx damage` のフラグが何をしているか迷ったらここを第一参照。
 - **`.claude/skills/nash/references/theory.md`** — 零和 LP / Simplex / Fictitious play / MWU の数式と根拠。`pkdx nash solve` の正当性、数値安定性 (shift-and-normalize)、退化ケースの扱いに関する質問はここを第一参照。
 - **`.claude/skills/nash/references/exploitability.md`** — exploitability / NashConv / KL / L1 の定義と使い分け。Nash 判定基準 (≤ 1e-6)、メタ乖離分析の解釈に関する質問はここ。
 - **`.claude/skills/nash/references/payoff_semantics.md`** — `TeamPayoffModel` (SwitchingGame / ScreenedSwitchingGame) の仕様・計算量・選択基準。選出最適化のどのモデルを使うべきか、廃止済みの pairwise 系に関する履歴もここ。

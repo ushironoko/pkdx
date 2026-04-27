@@ -4,11 +4,12 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   let atk = input.attacker
   let dfn = input.defender
   let mv = input.move_
-  let mut move_type = mv.type_
   let move_name = mv.name
-  let move_power = mv.power
-  let is_physical = mv.category == @model.Physical
-  let is_special = mv.category == @model.Special
+  // ウェザーボール等の type/power 上書きは Skin ability / STAB 判定の前に行う。
+  // Normal→他タイプに変わった結果としてスキンが効かなくなる挙動が自然に成立。
+  let (resolved_power, resolved_type) = resolve_move_type_override(mv, input)
+  let mut move_type = resolved_type
+  let move_power = resolved_power
   let weather = input.weather
   let field = input.field
   let tera_type = input.tera_type
@@ -39,35 +40,48 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
     }
   }
 
+  // StatResolution に body press / psyshock / shell side arm / secret sword /
+  // unaware / critical を集約する。ここでは base stat (未補正) を比較材料と
+  // して渡す — shell side arm の動的判定は本来 nature/item 補正後の値で行う
+  // のが Showdown 準拠だが、現状 PR-A では base 比較で十分な近似とし、将来
+  // PR で精度向上する。既存テストは shell side arm を含まないため挙動不変。
+  let sr = resolve_stat_resolution(
+    mv,
+    atk_atk=atk.atk, atk_spa=atk.spa,
+    def_def=dfn.def_, def_spd=dfn.spd,
+    atk_ability~,
+    def_ability~,
+    critical=input.critical,
+  )
+  // シェルアームズ は mv.category=Special のままで物理経路を辿る必要がある。
+  // 下流の ability / item / wall / weather / ruin 分岐は必ず sr.effective_physical
+  // 由来のこのフラグを参照すること (mv.category を直接参照してはならない)。
+  let is_physical = sr.effective_physical
+  let is_special = not(sr.effective_physical)
   // ボディプレスは攻撃側のDefenseを攻撃値として使う物理技。
   // Attack系の補正（ちからもち・はりきり・ハチマキ等）は適用されず、
   // Defense系の補正（ファーコート・しんかのきせき等）が適用される。
-  let is_body_press = move_name == "ボディプレス"
+  // StatResolution 経由で判定: atk_stat_kind=Def かつ物理扱いなら body press
+  // 相当 (技名で判定するより拡張性が高い)。
+  let is_body_press = sr.atk_stat_kind == @model.StatIndex::Def &&
+    sr.effective_physical
 
   // 2. Stat calculation
-  let atk_base = if is_physical {
-    if is_body_press {
-      atk.def_
-    } else {
-      atk.atk
-    }
-  } else {
-    atk.spa
+  let atk_base = match sr.atk_stat_kind {
+    @model.StatIndex::Atk => atk.atk
+    @model.StatIndex::Def => atk.def_
+    @model.StatIndex::SpA => atk.spa
+    // 下記 3 つは StatResolution が返さない値だが網羅性のため残す。
+    _ => atk.atk
   }
   let def_base_hp = dfn.hp
-  let def_base = if is_physical { dfn.def_ } else { dfn.spd }
-
-  // Nature が参照する stat index を決定する。
-  // 攻撃側: body press は Def、それ以外は move カテゴリに従って Atk / SpA。
-  // 防御側: move カテゴリに従って Def / SpD。
-  let atk_stat_index : @model.StatIndex = if is_body_press {
-    Def
-  } else if is_physical {
-    Atk
-  } else {
-    SpA
+  let def_base = match sr.def_stat_kind {
+    @model.StatIndex::Def => dfn.def_
+    @model.StatIndex::SpD => dfn.spd
+    _ => dfn.def_
   }
-  let def_stat_index : @model.StatIndex = if is_physical { Def } else { SpD }
+  let atk_stat_index : @model.StatIndex = sr.atk_stat_kind
+  let def_stat_index : @model.StatIndex = sr.def_stat_kind
 
   // Nature 補正 numerator/denominator:
   //   attacker default (None) = +10% (legacy 攻撃stat特化相当)
@@ -123,17 +137,21 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
 
   // 2a-2. Rank (stat stage) modifiers
   // override は「rank 前の実数値」として扱う。rank は常に掛ける。
-  let atk_stage = if input.critical && input.atk_rank < 0 {
-    0
-  } else {
-    input.atk_rank
-  }
+  // StatResolution の mask 情報に従って、てんねん / 急所 / せいなるつるぎ /
+  // SecretSword を直交合成する。
+  let atk_stage = apply_rank_masks(
+    input.atk_rank,
+    sr.atk_rank_mask,
+    sr.atk_rank_positive_mask,
+    sr.atk_rank_negative_mask,
+  )
   atk_stat = apply_rank(atk_stat, atk_stage)
-  let def_stage = if input.critical && input.def_rank > 0 {
-    0
-  } else {
-    input.def_rank
-  }
+  let def_stage = apply_rank_masks(
+    input.def_rank,
+    sr.def_rank_mask,
+    sr.def_rank_positive_mask,
+    sr.def_rank_negative_mask,
+  )
   def_stat = apply_rank(def_stat, def_stage)
 
   // 2b. Ability stat modifiers
@@ -216,27 +234,15 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   }
 
   // 3. Power calculation
-  let mut effective_power = move_power
-
-  // おはかまいり: 基礎威力50 + 味方瀕死回数×50（最大100回=5050）
-  if move_name == "おはかまいり" {
-    let count = if input.fainted_count > 100 { 100 } else { input.fainted_count }
-    effective_power = 50 + count * 50
-  }
-
-  // 体重参照技は固定威力を上書きする（後続のテクニシャン等の補正は通常通り乗る）。
-  if move_name == "けたぐり" || move_name == "くさむすび" {
-    let dw = effective_weight(dfn.weight, def_ability)
-    effective_power = weight_based_power(dw)
-  } else if move_name == "ヘビーボンバー" || move_name == "ヒートスタンプ" {
-    let aw = effective_weight(atk.weight, atk_ability)
-    let dw = effective_weight(dfn.weight, def_ability)
-    effective_power = weight_ratio_power(aw, dw)
-  }
-
+  // 威力可変技 (おはかまいり / 体重依存 / つけあがる / アシストパワー /
+  // やけっぱち / はたきおとす / たたりめ) は variable_power.mbt に集約。
+  let mut effective_power = resolve_variable_power(
+    move_power, mv, input, dfn, atk, atk_ability, def_ability,
+  )
   if atk_ability.length() > 0 {
     effective_power = apply_atk_ability_power(
       atk_ability, move_name, move_type, effective_power, weather,
+      force_contact=sr.force_contact,
     )
   }
   if atk_item.length() > 0 {
@@ -254,10 +260,6 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
       }
     }
   }
-
-  // 4. Base damage
-  let inner = 22 * effective_power * atk_stat / def_stat
-  let damage_base = inner / 50 + 2
 
   // Type effectiveness (using x4 integer encoding)
   let atk_type_opt = @types.type_from_jp(move_type)
@@ -306,122 +308,190 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
     4096
   }
 
-  // 16-roll damage loop
-  let damages : FixedArray[Int] = FixedArray::make(16, 0)
-  let percents : FixedArray[Double] = FixedArray::make(16, 0.0)
+  // 16-roll damage loop, factored into a closure so Parental Bond can re-run
+  // it at quarter power for the 2nd hit (Showdown-accurate per-hit pipeline).
+  // All non-power state (stat, ability, item, wall, STAB, type effectiveness,
+  // Tinted Lens) is closed over and shared between the two invocations.
+  let compute_rolls = fn(eff_pow : Int) -> FixedArray[Int] {
+    let safe_pow = if eff_pow < 1 { 1 } else { eff_pow }
+    let inner = 22 * safe_pow * atk_stat / def_stat
+    let damage_base = inner / 50 + 2
+    let out : FixedArray[Int] = FixedArray::make(16, 0)
+    for idx = 0; idx < 16; idx = idx + 1 {
+      let rand = 85 + idx
+      let mut dmg = damage_base
 
-  for idx = 0; idx < 16; idx = idx + 1 {
-    let rand = 85 + idx
-    let mut dmg = damage_base
-
-    // Spread move modifier (double battle, 0.75x)
-    if input.is_double && is_spread_move(move_name) {
-      dmg = round5(dmg, 3072)
-    }
-
-    // Weather damage mod
-    if weather.is_active() {
-      let w_mod = get_weather_damage_mod(weather, move_type)
-      if w_mod > 0 {
-        dmg = round5(dmg, w_mod)
+      // Spread move modifier (double battle, 0.75x)
+      if input.is_double && is_spread_move(move_name) {
+        dmg = round5(dmg, 3072)
       }
-    }
 
-    // Field mod
-    if field.is_active() {
-      let f_mod = get_field_damage_mod(field, move_type)
-      if f_mod > 0 {
-        dmg = round5(dmg, f_mod)
-      }
-    }
-
-    // Critical
-    if input.critical {
-      dmg = round5(dmg, 6144)
-    }
-
-    // Random roll
-    dmg = dmg * rand / 100
-
-    // STAB
-    if has_stab {
-      dmg = round5(dmg, stab_mult)
-    }
-
-    // Skin bonus
-    if skin_bonus {
-      dmg = round5(dmg, 4915)
-    }
-
-    // Type effectiveness (integer fraction)
-    dmg = dmg * eff1_x4 / 4
-    dmg = dmg * eff2_x4 / 4
-
-    // Defender ability final
-    if def_ability.length() > 0 {
-      let d_mod = get_def_ability_final(
-        def_ability, move_name, move_type, is_super_effective, is_special,
-      )
-      if d_mod > 0 {
-        dmg = round5(dmg, d_mod)
-      }
-    }
-
-    // Attacker ability final
-    if atk_ability.length() > 0 {
-      let a_mod = get_atk_ability_final(atk_ability, move_type, input.fainted_count)
-      if a_mod > 0 {
-        dmg = round5(dmg, a_mod)
-      }
-    }
-
-    // Tinted Lens
-    if atk_ability == "いろめがね" && is_not_very_effective {
-      dmg = dmg * 2
-    }
-
-    // Attacker item final
-    if atk_item.length() > 0 {
-      let i_mod = get_atk_item_final(atk_item, is_physical, is_super_effective)
-      if i_mod > 0 {
-        dmg = round5(dmg, i_mod)
-      }
-    }
-
-    // Resist berry
-    if def_item.length() > 0 {
-      let berry_type = get_resist_berry_type(def_item)
-      if berry_type.length() > 0 && berry_type == move_type {
-        if def_item == "ホズのみ" || is_super_effective {
-          dmg = round5(dmg, 2048)
+      // Weather damage mod
+      if weather.is_active() {
+        let w_mod = get_weather_damage_mod(weather, move_type)
+        if w_mod > 0 {
+          dmg = round5(dmg, w_mod)
         }
       }
-    }
 
-    // Minimum 1
-    if dmg < 1 {
-      dmg = 1
-    }
+      // Field mod
+      if field.is_active() {
+        let f_mod = get_field_damage_mod(field, move_type)
+        if f_mod > 0 {
+          dmg = round5(dmg, f_mod)
+        }
+      }
 
-    damages[idx] = dmg
-    percents[idx] = dmg.to_double() / def_hp.to_double() * 100.0
+      // Critical
+      if input.critical {
+        dmg = round5(dmg, 6144)
+      }
+
+      // Random roll
+      dmg = dmg * rand / 100
+
+      // STAB
+      if has_stab {
+        dmg = round5(dmg, stab_mult)
+      }
+
+      // Skin bonus
+      if skin_bonus {
+        dmg = round5(dmg, 4915)
+      }
+
+      // Type effectiveness (integer fraction)
+      dmg = dmg * eff1_x4 / 4
+      dmg = dmg * eff2_x4 / 4
+
+      // Defender ability final
+      if def_ability.length() > 0 {
+        let d_mod = get_def_ability_final(
+          def_ability, move_name, move_type, is_super_effective, is_special,
+          force_contact=sr.force_contact,
+        )
+        if d_mod > 0 {
+          dmg = round5(dmg, d_mod)
+        }
+      }
+
+      // Attacker ability final
+      if atk_ability.length() > 0 {
+        let a_mod = get_atk_ability_final(atk_ability, move_type, input.fainted_count)
+        if a_mod > 0 {
+          dmg = round5(dmg, a_mod)
+        }
+      }
+
+      // Walls (Reflect / Light Screen / Aurora Veil).
+      // Inserted between ability finals and Tinted Lens — matches the
+      // Showdown final-mod chain. Critical, screen_pierce (move-side bypass),
+      // and mold-breaker-family abilities each skip the multiplier
+      // independently.
+      let wall_ok = wall_applies(input.wall, is_physical) &&
+        not(input.critical) &&
+        not(input.screen_pierce) &&
+        not(is_wall_bypass_ability(atk_ability))
+      if wall_ok {
+        let wall_mod = if input.is_double { 2732 } else { 2048 }
+        dmg = round5(dmg, wall_mod)
+      }
+
+      // Tinted Lens
+      if atk_ability == "いろめがね" && is_not_very_effective {
+        dmg = dmg * 2
+      }
+
+      // Attacker item final
+      if atk_item.length() > 0 {
+        let i_mod = get_atk_item_final(atk_item, is_physical, is_super_effective)
+        if i_mod > 0 {
+          dmg = round5(dmg, i_mod)
+        }
+      }
+
+      // Resist berry
+      if def_item.length() > 0 {
+        let berry_type = get_resist_berry_type(def_item)
+        if berry_type.length() > 0 && berry_type == move_type {
+          if def_item == "ホズのみ" || is_super_effective {
+            dmg = round5(dmg, 2048)
+          }
+        }
+      }
+
+      // Minimum 1
+      if dmg < 1 {
+        dmg = 1
+      }
+
+      out[idx] = dmg
+    }
+    out
+  }
+  let damages = compute_rolls(effective_power)
+  let percents : FixedArray[Double] = FixedArray::make(16, 0.0)
+  for i = 0; i < 16; i = i + 1 {
+    percents[i] = damages[i].to_double() / def_hp.to_double() * 100.0
   }
 
-  // KO calculation
-  let min_d = damages[0]
-  let max_d = damages[15]
-  let ko_text = calc_ko_text(damages, def_hp)
+  // Disguise: ばけのかわ の初撃は実ダメージを素通し、状態遷移だけ行う。
+  // State transition precedes any multi-hit expansion — disguise absorbs the
+  // full move regardless of how many hits it would have landed.
+  if def_ability == "ばけのかわ" && input.disguise_active {
+    return disguise_blocked_result(def_hp)
+  }
 
+  // Multi-hit post-processing. Parental Bond's 2nd hit is now computed by
+  // re-running the full 16-roll pipeline at 1/4 base power (Gen7+ spec). This
+  // is Showdown-accurate: every modifier (STAB, Skin, type eff., abilities,
+  // walls, items, berries, min-1 floor) is applied independently to each hit.
+  let hit_plan = resolve_hit_plan(mv, atk_ability, input.multi_hit_mode)
+  let (final_damages, final_percents, hits_dealt) : (
+    FixedArray[Int],
+    FixedArray[Double],
+    Int,
+  ) = match hit_plan {
+    Single => (damages, percents, 1)
+    FixedHits(n) => {
+      let out : FixedArray[Int] = FixedArray::make(16, 0)
+      let pct : FixedArray[Double] = FixedArray::make(16, 0.0)
+      for i = 0; i < 16; i = i + 1 {
+        out[i] = damages[i] * n
+        pct[i] = out[i].to_double() / def_hp.to_double() * 100.0
+      }
+      (out, pct, n)
+    }
+    ParentalBond => {
+      // 2nd hit at 1/4 power, full pipeline.
+      let pow2 = effective_power / 4
+      let damages2 = compute_rolls(pow2)
+      let out : FixedArray[Int] = FixedArray::make(16, 0)
+      let pct : FixedArray[Double] = FixedArray::make(16, 0.0)
+      for i = 0; i < 16; i = i + 1 {
+        out[i] = damages[i] + damages2[i]
+        pct[i] = out[i].to_double() / def_hp.to_double() * 100.0
+      }
+      (out, pct, 2)
+    }
+  }
+
+  // KO calculation (using final_damages so multi-hit totals count toward KOs).
+  let min_d = final_damages[0]
+  let max_d = final_damages[15]
+  let ko_text = calc_ko_text(final_damages, def_hp)
   @model.DamageCalcResult::{
-    damages,
-    percents,
+    damages: final_damages,
+    percents: final_percents,
     min_damage: min_d,
     max_damage: max_d,
-    min_percent: percents[0],
-    max_percent: percents[15],
+    min_percent: final_percents[0],
+    max_percent: final_percents[15],
     ko_text,
     defender_hp: def_hp,
     is_immune: false,
+    disguise_blocked: false,
+    hits_dealt,
   }
 }
 
@@ -488,6 +558,27 @@ fn immune_result(def_hp : Int) -> @model.DamageCalcResult {
     ko_text: "immune",
     defender_hp: def_hp,
     is_immune: true,
+    disguise_blocked: false,
+    hits_dealt: 1,
+  }
+}
+
+///|
+/// Disguise initial hit: no damage dealt; state transition (1/8 max HP chip)
+/// is the caller's responsibility.
+fn disguise_blocked_result(def_hp : Int) -> @model.DamageCalcResult {
+  @model.DamageCalcResult::{
+    damages: FixedArray::make(16, 0),
+    percents: FixedArray::make(16, 0.0),
+    min_damage: 0,
+    max_damage: 0,
+    min_percent: 0.0,
+    max_percent: 0.0,
+    ko_text: "けがわブロック",
+    defender_hp: def_hp,
+    is_immune: false,
+    disguise_blocked: true,
+    hits_dealt: 0,
   }
 }
 

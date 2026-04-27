@@ -34,6 +34,7 @@ fn ck_pokemon(name : String) -> @model.Pokemon {
     ability2: "",
     dream_ability: "",
     weight: 0.0,
+    forms: [],
   }
 }
 

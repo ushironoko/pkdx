@@ -58,6 +58,7 @@ test "compute_mean_damage: burned attacker halves physical damage" {
     ability2: "",
     dream_ability: "",
     weight: 90.5,
+    forms: [],
   }
   let defender_pokemon : @model.Pokemon = {
     global_no: "0143",
@@ -76,6 +77,7 @@ test "compute_mean_damage: burned attacker halves physical damage" {
     ability2: "",
     dream_ability: "",
     weight: 460.0,
+    forms: [],
   }
   let atk : Combatant = {
     pokemon: attacker_pokemon,
@@ -129,6 +131,7 @@ test "compute_mean_damage: burned special attacker unchanged" {
     ability2: "",
     dream_ability: "",
     weight: 90.5,
+    forms: [],
   }
   let defender_pokemon : @model.Pokemon = {
     global_no: "0143",
@@ -147,6 +150,7 @@ test "compute_mean_damage: burned special attacker unchanged" {
     ability2: "",
     dream_ability: "",
     weight: 460.0,
+    forms: [],
   }
   let atk : Combatant = {
     pokemon: attacker_pokemon,
@@ -377,6 +381,7 @@ fn mk_test_pokemon(
     ability2: "",
     dream_ability: "",
     weight: 50.0,
+    forms: [],
   }
 }
 
@@ -607,6 +612,7 @@ fn mk_stat_pokemon(
     ability2: "",
     dream_ability: "",
     weight: 50.0,
+    forms: [],
   }
 }
 

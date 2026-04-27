@@ -5,6 +5,12 @@
 
 ///|
 /// Mean damage over the 16-roll table. Zero for immune matchups.
+///
+/// ばけのかわが剥がれる初撃は engine が `damages=0` + `disguise_blocked=true`
+/// を返す。このターン攻撃側は実ダメを 0 しか稼げないが、防御側は 1/8 の
+/// chip ダメージを払う (Gen7 以降仕様) ので、payoff 層で「このターンの相手
+/// への与ダメ期待値」を評価する上では 0 ではなく `max_hp / 8` 固定を加算
+/// する方が現実に近い。本関数ではこれを固定加算として織り込む。
 fn avg_damage(r : @model.DamageCalcResult) -> Double {
   if r.is_immune {
     return 0.0
@@ -13,7 +19,12 @@ fn avg_damage(r : @model.DamageCalcResult) -> Double {
   for i in 0..<16 {
     s += r.damages[i]
   }
-  s.to_double() / 16.0
+  let base = s.to_double() / 16.0
+  if r.disguise_blocked {
+    base + r.defender_hp.to_double() / 8.0
+  } else {
+    base
+  }
 }
 
 ///|
@@ -39,13 +50,23 @@ fn effective_hp(c : Combatant) -> Int {
 
 ///|
 /// `actual_stats` は `[H, A, B, C, D, Spe]` 順の HABCDS 配列。engine.mbt の
-/// `is_body_press` / `is_physical` 分岐と対応する stat index を返す:
+/// `stat_resolution` と同じ分岐を payoff 層でも辿る:
 ///   - ボディプレス → 攻撃側 Def (index 2)
-///   - 物理技       → 攻撃側 Atk (1)、防御側 Def (2)
-///   - 特殊技       → 攻撃側 SpA (3)、防御側 SpD (4)
+///   - Psyshock family (サイコショック / サイコブレイク / しんぴのつるぎ)
+///       → 防御側 Def (2) を参照する特殊技
+///   - 物理技   → 攻撃側 Atk (1)、防御側 Def (2)
+///   - 特殊技   → 攻撃側 SpA (3)、防御側 SpD (4)
+///
+/// シェルアームズは payoff 層では補正済み stat を持たない段階で判定できない
+/// ので、現状 Move.category (Special) のまま扱う。将来の PR で actual_stats
+/// から動的選択する場合は `payoff/team_monte_carlo` 側で早期判定する。
 fn attack_defense_stat_indices(mv : @model.Move) -> (Int, Int) {
   let is_physical = mv.category == @model.Physical
-  let is_body_press = mv.name == "ボディプレス"
+  let name = mv.name
+  let is_body_press = name == "ボディプレス"
+  let is_psyshock_family = name == "サイコショック" ||
+    name == "サイコブレイク" ||
+    name == "しんぴのつるぎ"
   let atk_idx = if is_body_press {
     2
   } else if is_physical {
@@ -53,7 +74,13 @@ fn attack_defense_stat_indices(mv : @model.Move) -> (Int, Int) {
   } else {
     3
   }
-  let def_idx = if is_physical { 2 } else { 4 }
+  let def_idx = if is_psyshock_family {
+    2
+  } else if is_physical {
+    2
+  } else {
+    4
+  }
   (atk_idx, def_idx)
 }
 
@@ -107,5 +134,16 @@ fn build_input_with_ranks(
     fainted_count: 0,
     is_double: false,
     stat_system: atk.stat_system,
+    wall: @model.Wall::NoWall,
+    screen_pierce: false,
+    atk_status_condition: @model.StatusCondition::None,
+    def_status_condition: @model.StatusCondition::None,
+    atk_rank_up_count: 0,
+    def_rank_up_count: 0,
+    atk_hp_num: 2,
+    atk_hp_den: 2,
+    def_item_removable: false,
+    multi_hit_mode: @model.MultiHit::Auto,
+    disguise_active: false,
   }
 }

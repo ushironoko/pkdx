@@ -236,3 +236,348 @@ test "query_pokemon: ガブリアス scarlet_violet stats" {
     Err(e) => fail("query_pokemon failed: " + e)
   }
 }
+
+// 011_form_name_aliases (フォーム別名解決) の回帰テスト群。
+// 原種→forms[]→特化名 という発見フローが壊れないように検証する。
+
+///|
+/// Rotom 系は pokedex_form.form が原種名を含む (ウォッシュロトム ⊃ ロトム)
+/// ため、合成せず verbatim で検索できる。フォーム直引きなので forms は空。
+test "query_pokemon: ウォッシュロトム champions (direct form alias)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "ウォッシュロトム", "champions")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0479")
+      inspect(p.name_ja, content="ウォッシュロトム")
+      // pne 自己結合が form/region で一致するため英語も form 特化になる
+      inspect(p.name_en, content="Wash Rotom")
+      inspect(p.type1, content="でんき")
+      inspect(p.type2, content="みず")
+      inspect(p.spa, content="105")
+      // フォーム直引きは forms[] 非表示 (原種に戻ってから見る導線)
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// アローラのすがた 等のリージョンフォームは species 共有なので
+/// "{species}（{form}）" に合成して一意化している。
+test "query_pokemon: キュウコン（アローラ） scarlet_violet (composed alias)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "キュウコン（アローラ）", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0038")
+      inspect(p.name_ja, content="キュウコン（アローラ）")
+      inspect(p.name_en, content="Ninetales (Alolan)")
+      inspect(p.type1, content="こおり")
+      inspect(p.atk, content="67")
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 原種 (base) 引きでは forms[] に該当 version で実在するフォームが列挙される。
+/// Discoverability の核: ユーザーがここから候補を選んで再 query する。
+test "query_pokemon: ロトム champions + forms list (discoverability)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "ロトム", "champions")
+  close(db)
+  match result {
+    Ok(p) => {
+      // 原種は base 情報を返す (既存動作の回帰チェックも兼ねる)
+      inspect(p.name_ja, content="ロトム")
+      inspect(p.type2, content="ゴースト")
+      let mut found_wash = false
+      let mut found_heat = false
+      let mut found_frost = false
+      let mut found_fan = false
+      let mut found_mow = false
+      for i = 0; i < p.forms.length(); i = i + 1 {
+        match p.forms[i] {
+          "ウォッシュロトム" => found_wash = true
+          "ヒートロトム" => found_heat = true
+          "フロストロトム" => found_frost = true
+          "スピンロトム" => found_fan = true
+          "カットロトム" => found_mow = true
+          _ => ()
+        }
+      }
+      assert_true(found_wash)
+      assert_true(found_heat)
+      assert_true(found_frost)
+      assert_true(found_fan)
+      assert_true(found_mow)
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 原種引きで合成 alias が forms[] に一意名で現れる。
+test "query_pokemon: キュウコン scarlet_violet + forms list (regional)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "キュウコン", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.name_ja, content="キュウコン")
+      let mut found = false
+      for i = 0; i < p.forms.length(); i = i + 1 {
+        if p.forms[i] == "キュウコン（アローラ）" {
+          found = true
+        }
+      }
+      assert_true(found)
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 戦闘面で差異のないフォーム (トリミアン毛型・ビビヨン模様) は migration で
+/// 除外されるので forms[] に列挙されない (ノイズ防止)。
+test "query_pokemon: トリミアン champions (cosmetic forms excluded)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "トリミアン", "champions")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0676")
+      inspect(p.name_ja, content="トリミアン")
+      // 10 種類の毛型があるが battle 面で同一なので全て skip
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 012_gender_symbol_aliases: M base id 上の `イダイトウ（オス）` を直接引いた時、
+/// (a) name_ja が日本語名のままで返ること, (b) base id 共有でも forms[] が
+/// 出ないこと (alias 直引きは F のような discoverability 不要)。
+test "query_pokemon: イダイトウ（オス） scarlet_violet (gender alias jpn)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "イダイトウ（オス）", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0902")
+      inspect(p.name_ja, content="イダイトウ（オス）")
+      inspect(p.name_en, content="Basculegion (Male)")
+      // M ステ (atk 112)
+      inspect(p.atk, content="112")
+      inspect(p.spa, content="80")
+      // alias 直引きは forms[] 非表示 (base id 共有でも form 列が非空なので除外)
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// English alias 引き (`Basculegion (Male)`) で name_ja が英語に化けないこと。
+/// pn が eng 行にマッチしても pnj 自己結合で jpn 行から name_ja が取れる。
+test "query_pokemon: Basculegion (Male) scarlet_violet (gender alias eng → jpn name)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "Basculegion (Male)", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0902")
+      // English 引きでも name_ja は jpn 行から取れること (本 PR の主目的)
+      inspect(p.name_ja, content="イダイトウ（オス）")
+      inspect(p.name_en, content="Basculegion (Male)")
+      inspect(p.atk, content="112")
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// English alias 引き (`Basculegion (Female)`, m011 経由) でも同様に name_ja が
+/// 日本語名で返ること。M/F 両側で name_ja の整合性が崩れないことを確認。
+test "query_pokemon: Basculegion (Female) scarlet_violet (eng alias → jpn name)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "Basculegion (Female)", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0902")
+      inspect(p.name_ja, content="イダイトウ（メス）")
+      inspect(p.name_en, content="Basculegion (Female)")
+      // F ステ (atk 92)
+      inspect(p.atk, content="92")
+      inspect(p.spa, content="100")
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 性別未指定の base 直引きは M base 値を返し、forms[] に F alias を含む。
+/// M alias (`イダイトウ（オス）`) は M base id を共有するため query_forms
+/// の "id != base_id" 条件で除外され forms[] には現れない。
+test "query_pokemon: イダイトウ scarlet_violet (base form discovery)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "イダイトウ", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0902")
+      inspect(p.name_ja, content="イダイトウ")
+      inspect(p.name_en, content="Basculegion")
+      // base = M ステ (atk 112 / spa 80)
+      inspect(p.atk, content="112")
+      inspect(p.spa, content="80")
+      // forms[] には F alias のみ
+      inspect(p.forms.length(), content="1")
+      inspect(p.forms[0], content="イダイトウ（メス）")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// ステ差ではなく特性差で M/F が分かれる種 (ニャオニクス) でも gender alias
+/// が機能すること。M HA は いたずらごころ、F HA は かちき。
+test "query_pokemon: ニャオニクス（オス） scarlet_violet (gender alias ability diff)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "ニャオニクス（オス）", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0678")
+      inspect(p.name_ja, content="ニャオニクス（オス）")
+      inspect(p.name_en, content="Meowstic (Male)")
+      inspect(p.dream_ability, content="いたずらごころ")
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// gender alias は scarlet_violet だけでなく Champions でも引けること。
+/// version 横断で同一 alias が機能することを保証する。
+test "query_pokemon: イダイトウ（オス） champions (gender alias version cross)" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "イダイトウ（オス）", "champions")
+  close(db)
+  match result {
+    Ok(p) => {
+      inspect(p.global_no, content="0902")
+      inspect(p.name_ja, content="イダイトウ（オス）")
+      inspect(p.atk, content="112")
+      inspect(p.spa, content="80")
+      inspect(p.forms.length(), content="0")
+    }
+    Err(e) => fail("query_pokemon failed: " + e)
+  }
+}
+
+///|
+/// 該当 version にそのフォームが無い場合は "Pokemon not found"。
+/// Therian Landorus は BW/BW2/LegendsArceus にしか無い。
+test "query_pokemon: Therian form absent in SV errors cleanly" {
+  let db_path = match find_test_db() {
+    Some(p) => p
+    None => return
+  }
+  let db = match open(db_path) {
+    Ok(d) => d
+    Err(e) => fail("failed to open test db: " + e)
+  }
+  let result = query_pokemon(db, "ランドロス（れいじゅう）", "scarlet_violet")
+  close(db)
+  match result {
+    Ok(_) => fail("should have failed: therian not in SV")
+    Err(_) => ()
+  }
+}

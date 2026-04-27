@@ -90,6 +90,7 @@ test "calc_all_stats: ガブリアス いじっぱり AS252 D4" {
     ability2: "",
     dream_ability: "さめはだ",
     weight: 95.0,
+    forms: [],
   }
   let ivs : FixedArray[Int] = [31, 31, 31, 31, 31, 31]
   let evs : FixedArray[Int] = [0, 252, 0, 0, 4, 252]
@@ -155,6 +156,7 @@ test "reverse_spread: ガブリアス 183/200/115/90/106/154" {
     ability2: "",
     dream_ability: "さめはだ",
     weight: 95.0,
+    forms: [],
   }
   let actual_stats : FixedArray[Int] = [183, 200, 115, 90, 106, 154]
   let results = reverse_spread(pokemon, actual_stats, 31)
