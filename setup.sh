@@ -85,37 +85,86 @@ else
   echo "  Done."
 fi
 
-# --- Step 2.7: BLAS dependency (for nash / select / meta-divergence) ---
-# nash/select/meta-divergence 系サブコマンドは numbt / mizchi/blas 経由で BLAS
-# に依存する。OS 別に利用可否を案内し、必要な環境変数を echo する。
-echo "[2.7/5] BLAS dependency check..."
+# --- Step 2.7: Link-flag / BLAS guidance for local moon build / moon test ---
+# pkdx/src/nash/moon.pkg と pkdx/src/payoff/moon.pkg は `cc-link-flags` の
+# 既定値として macOS 向け `-framework Accelerate` を埋め込んでいる。
+# `src/main` はこれらを推移的に依存するため、Linux/Windows で
+# `moon build --target native src/main` を実行する場合もリンク失敗を避ける
+# ため MOON_CC_LINK_FLAGS でこの既定を上書きする必要がある (= ツールチェーン
+# 側のリンカ固有のフラグ問題)。
+# 加えて `moon test` は numbt 経由で BLAS シンボル本体も要求するため、上書き
+# 値には実際の BLAS ライブラリを含める必要がある (= ライブラリ依存問題)。
+# 配布バイナリ (release) を「使うだけ」のユーザーには関係ない。
+echo "[2.7/5] Link-flag / BLAS guidance for local moon build/test..."
+echo "  Note: pre-built release binaries need no toolchain (no link step at install)."
+echo "  Note: package defaults to '-framework Accelerate' (macOS only)."
+echo "        Non-macOS local 'moon build' must override MOON_CC_LINK_FLAGS so the"
+echo "        linker accepts the flag at all; 'moon test' additionally needs real"
+echo "        BLAS symbols available."
 case "$OS_TAG" in
   darwin)
-    # macOS は Accelerate.framework が標準搭載。追加インストール不要。
-    echo "  macOS: Accelerate.framework is built in."
-    echo "  When building tests locally, export the link flag:"
-    echo "    export MOON_CC_LINK_FLAGS=\"-framework Accelerate\""
+    # macOS は Accelerate.framework が標準搭載。package 既定値と一致するため
+    # `moon build` は環境変数なしで通る。`moon test` も同じフラグでよい。
+    echo "  macOS: Accelerate.framework is built in; package defaults match."
+    echo "    'moon build' works with no env override."
+    echo "    'moon test' works with the same default (export if shell has cleared it):"
+    echo "      export MOON_CC_LINK_FLAGS=\"-framework Accelerate\""
     ;;
   linux)
-    # OpenBLAS + LAPACK が必要。MOON_CC_LINK_FLAGS で cc-link-flags を上書き。
     if command -v dpkg &>/dev/null && dpkg -s libopenblas-dev &>/dev/null && dpkg -s liblapack-dev &>/dev/null; then
       echo "  Linux: libopenblas-dev + liblapack-dev detected."
     elif command -v rpm &>/dev/null && rpm -q openblas-devel &>/dev/null; then
       echo "  Linux: openblas-devel detected."
     else
-      echo "  Linux: BLAS/LAPACK not detected. Install one of:"
+      echo "  Linux: BLAS/LAPACK not detected. Required for 'moon test':"
       echo "    Debian/Ubuntu: sudo apt-get install libopenblas-dev liblapack-dev"
       echo "    RHEL/Fedora:   sudo dnf install openblas-devel lapack-devel"
-      echo "    (nash / select / meta-divergence will fail to build without them.)"
     fi
-    echo "  When building locally, export the right link flags:"
+    echo "  Required to override the macOS-only default for both 'moon build' and 'moon test':"
     echo "    export MOON_CC_LINK_FLAGS=\"-lopenblas -llapack -lm\""
+    echo "    The override value names BLAS libraries; both 'moon build' and"
+    echo "    'moon test' need the libraries to resolve at link time. The"
+    echo "    production binary itself does not call BLAS symbols, but the"
+    echo "    transitive nash/payoff packages still trigger the linker pass."
     ;;
   windows)
-    # 現在 nash 系統は Windows 非対応。ビルドは失敗する可能性があるため警告。
-    echo "  Windows: nash / select / meta-divergence subcommands are NOT supported"
-    echo "    on this platform. The pre-built Windows release binary omits them;"
-    echo "    local builds will fail at link time without a Windows BLAS toolchain."
+    echo "  Windows: required to override the macOS-only default for both"
+    echo "    'moon build' and 'moon test'. Install vcpkg + OpenBLAS first."
+    echo "    Use the MinGW-targeted triplet so the produced import library"
+    echo "    matches the MinGW gcc.exe pinned via MOON_CC below; vcpkg's"
+    echo "    'x64-windows' triplet targets MSVC cl.exe and would mix ABIs."
+    echo "    vcpkg autodetects MinGW gcc/g++ via PATH at install time, so"
+    echo "    run the install from a shell that has mingw-w64 on PATH (or"
+    echo "    prepend it inline). In cmd (NOT bash):"
+    echo "      set PATH=C:\\mingw64\\bin;%PATH%"
+    echo "      C:\\vcpkg\\vcpkg.exe install openblas:x64-mingw-dynamic"
+    echo "    Or in PowerShell:"
+    echo "      \$env:PATH = \"C:\\mingw64\\bin;\$env:PATH\""
+    echo "      C:\\vcpkg\\vcpkg.exe install openblas:x64-mingw-dynamic"
+    echo "    Then in this shell (Git Bash / MSYS), export link flags before"
+    echo "    'moon build' or 'moon test':"
+    echo "      export MOON_CC_LINK_FLAGS=\"-LC:/vcpkg/installed/x64-mingw-dynamic/lib -lopenblas\""
+    echo "    The -L/-l form is GCC-style; if MoonBit picks cl.exe (MSVC) it"
+    echo "    will not accept this syntax. MoonBit's native backend reads"
+    echo "    MOON_CC (NOT the conventional CC) for compiler override; pin"
+    echo "    MOON_CC to a mingw-w64 GCC by absolute path so resolution does"
+    echo "    not silently fall back to auto-detection (and pick up cl.exe):"
+    if [ -x "/c/mingw64/bin/gcc.exe" ]; then
+      echo "      export MOON_CC=\"C:/mingw64/bin/gcc.exe\"     # detected"
+    elif [ -x "/c/msys64/mingw64/bin/gcc.exe" ]; then
+      echo "      export MOON_CC=\"C:/msys64/mingw64/bin/gcc.exe\"   # detected (MSYS2)"
+    else
+      echo "      export MOON_CC=\"C:/mingw64/bin/gcc.exe\"     # adjust if MinGW is elsewhere"
+      echo "    No mingw-w64 GCC detected at C:/mingw64 or C:/msys64/mingw64."
+      echo "    Install MSYS2 (https://www.msys2.org/) and 'pacman -S"
+      echo "    mingw-w64-x86_64-gcc', or use the niXman/mingw-builds-binaries"
+      echo "    release that the GitHub Actions windows-2022 image uses."
+    fi
+    echo "    Also add C:/vcpkg/installed/x64-mingw-dynamic/bin to PATH so the"
+    echo "    DLL resolves at runtime (used by 'moon test')."
+    echo "    Both 'moon build' and 'moon test' need OpenBLAS installed; the"
+    echo "    production binary does not call BLAS symbols itself but the"
+    echo "    transitive nash/payoff packages still trigger the linker pass."
     ;;
 esac
 

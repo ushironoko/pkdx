@@ -3,6 +3,10 @@ name: Build pkdx binaries
 on:
   push:
     tags: ['v*']
+  # Pre-merge validation path: maintainers can dispatch manually on a branch
+  # to exercise the Windows vcpkg/OpenBLAS toolchain before tagging a release.
+  # The release job is gated to tag pushes so manual runs only build & test.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -47,21 +51,67 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libopenblas-dev liblapack-dev
 
+      - name: Cache vcpkg installed (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            C:/vcpkg/installed
+            C:/vcpkg/packages
+          key: vcpkg-openblas-x64-mingw-dynamic-v1
+          restore-keys: |
+            vcpkg-openblas-x64-mingw-dynamic-
+
+      - name: Install BLAS (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Use the MinGW-targeted triplet so the produced libopenblas.dll.a /
+          # libopenblas.dll match the MinGW gcc.exe used in Build/Test below.
+          # `x64-windows` would be the MSVC `cl.exe` target — mixing it with
+          # MinGW gcc gives an unsupported ABI/import-lib mismatch (see
+          # https://learn.microsoft.com/en-us/vcpkg/users/platforms/mingw).
+          # vcpkg's MinGW triplet build needs gcc/g++ on PATH at install time
+          # (it autodetects the toolchain via PATH), so prepend the runner's
+          # mingw-w64 bin dir before invoking vcpkg.
+          $env:PATH = "C:\mingw64\bin;$env:PATH"
+          C:\vcpkg\vcpkg.exe install openblas:x64-mingw-dynamic
+          # Add OpenBLAS DLL dir to PATH for runtime resolution during moon test.
+          Add-Content $env:GITHUB_PATH "C:\vcpkg\installed\x64-mingw-dynamic\bin"
+
+      - name: Configure MoonBit compiler (Windows)
+        # MoonBit's native backend reads MOON_CC for compiler override (NOT the
+        # conventional CC); without it, auto-detection picks cl.exe (MSVC) on
+        # Windows, which would reject the GCC-style `-L/-l` link flags below.
+        # windows-2022 runners install mingw-w64 GCC at C:\mingw64\bin\gcc.exe
+        # (Install-Mingw64.ps1). Pin the absolute path so resolution does not
+        # depend on PATH state — Git Bash inherits the machine PATH but a
+        # future image change could move mingw under MSYS2 and silently break
+        # `MOON_CC=gcc`.
+        # Setting MOON_CC must be Windows-only: MoonBit treats any present
+        # MOON_CC as an explicit override and parses the value, so an empty
+        # string trips `failed to parse cc from env MOON_CC` on Linux/macOS.
+        # Writing to $GITHUB_ENV from a runner.os == 'Windows' step keeps the
+        # variable absent on the other matrix legs.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "MOON_CC=C:/mingw64/bin/gcc.exe" >> "$GITHUB_ENV"
+
       - name: Build
         working-directory: pkdx
         env:
-          # The production binary does not link numbt/BLAS — nash/payoff import
-          # numbt `for test` only — so no BLAS link flag is strictly required
-          # here. We still export a platform-appropriate MOON_CC_LINK_FLAGS so
-          # that (a) any transitive dependency pulling BLAS is satisfied, and
-          # (b) `moon test` runs downstream of this step work without manual
-          # flag-setting. Windows is best-effort; the downstream feature-gate
-          # in `bin/pkdx.cmd` hides nash/select/meta-divergence on that
-          # platform.
-          MOON_CC_LINK_FLAGS: ${{ runner.os == 'Linux' && '-lopenblas -llapack -lm' || (runner.os == 'macOS' && '-framework Accelerate' || '') }}
+          MOON_CC_LINK_FLAGS: ${{ runner.os == 'Linux' && '-lopenblas -llapack -lm' || (runner.os == 'macOS' && '-framework Accelerate' || (runner.os == 'Windows' && '-LC:/vcpkg/installed/x64-mingw-dynamic/lib -lopenblas' || '')) }}
         run: |
           moon update
           moon build --target native src/main
+        shell: bash
+
+      - name: Test
+        working-directory: pkdx
+        env:
+          MOON_CC_LINK_FLAGS: ${{ runner.os == 'Linux' && '-lopenblas -llapack -lm' || (runner.os == 'macOS' && '-framework Accelerate' || (runner.os == 'Windows' && '-LC:/vcpkg/installed/x64-mingw-dynamic/lib -lopenblas' || '')) }}
+        run: |
+          moon test --target native
         shell: bash
 
       - name: Copy binary (Unix)
@@ -81,6 +131,10 @@ jobs:
 
   release:
     needs: build
+    # Only publish a release on tag pushes. Gate on event_name as well so a
+    # manual workflow_dispatch on a tag ref (e.g. re-running an old release)
+    # does not silently re-publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
