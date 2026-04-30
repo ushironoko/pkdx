@@ -75,6 +75,15 @@ jobs:
           # (it autodetects the toolchain via PATH), so prepend the runner's
           # mingw-w64 bin dir before invoking vcpkg.
           $env:PATH = "C:\mingw64\bin;$env:PATH"
+          $lib = "C:\vcpkg\installed\x64-mingw-dynamic\lib\libopenblas.dll.a"
+          $dll = "C:\vcpkg\installed\x64-mingw-dynamic\bin\libopenblas.dll"
+          $headerA = "C:\vcpkg\installed\x64-mingw-dynamic\include\cblas.h"
+          $headerB = "C:\vcpkg\installed\x64-mingw-dynamic\include\openblas\cblas.h"
+          if ((Test-Path $lib) -and (Test-Path $dll) -and ((Test-Path $headerA) -or (Test-Path $headerB))) {
+            Write-Host "OpenBLAS restored from cache."
+            Add-Content $env:GITHUB_PATH "C:\vcpkg\installed\x64-mingw-dynamic\bin"
+            exit 0
+          }
           C:\vcpkg\vcpkg.exe install openblas:x64-mingw-dynamic
           # Add OpenBLAS DLL dir to PATH for runtime resolution during moon test.
           Add-Content $env:GITHUB_PATH "C:\vcpkg\installed\x64-mingw-dynamic\bin"
