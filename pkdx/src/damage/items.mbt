@@ -129,3 +129,53 @@ pub fn get_resist_berry_type(item : String) -> String {
     _ => ""
   }
 }
+
+///|
+/// Contact-induced status procs from a held item — defender side.
+/// Returns one or more `(StatusKind, chance%)` entries the item inflicts
+/// on the attacker when struck by a contact move; empty array for
+/// non-procking items. Mirrors `contact_proc_ability`'s shape so the
+/// payoff layer's fanout treats abilities and items uniformly.
+///
+/// とびだすハバネロ / とびだすなかみ are 100% triggers per Showdown
+/// spec, so the chance node always produces a single Burn / Paralyze
+/// outcome with probability 1.0.
+pub fn contact_proc_item(
+  name : String,
+) -> Array[(@model.StatusKind, Int)] {
+  match name {
+    "とびだすハバネロ" => [(@model.BurnKind, 100)]
+    "とびだすなかみ" => [(@model.ParalyzeKind, 100)]
+    _ => []
+  }
+}
+
+///|
+/// `move_type` super-effective against (`def_type1`, `def_type2`)? Used by
+/// the payoff layer to gate resist berry triggers (#97 / P5). Empty
+/// `def_type2` means single-typed defender. Returns `false` if a type name
+/// fails to resolve in the chart (immune-or-unknown is conservative).
+pub fn is_super_effective(
+  move_type : String,
+  def_type1 : String,
+  def_type2 : String,
+) -> Bool {
+  let atk = match @types.type_from_jp(move_type) {
+    Some(t) => t
+    None => return false
+  }
+  let d1 = match @types.type_from_jp(def_type1) {
+    Some(t) => t
+    None => return false
+  }
+  let e1 = @types.get_effectiveness_x4(atk, d1)
+  let e2 = if def_type2.length() > 0 {
+    match @types.type_from_jp(def_type2) {
+      Some(t) => @types.get_effectiveness_x4(atk, t)
+      None => 4
+    }
+  } else {
+    4
+  }
+  e1 * e2 > 16
+}

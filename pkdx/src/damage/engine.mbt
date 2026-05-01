@@ -119,7 +119,7 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   } else {
     calc_def_stat(def_base_hp, is_hp=true, custom=input.def_hp_override)
   }
-  let mut def_stat = if input.stat_system == @model.Champions {
+  let raw_def_stat = if input.stat_system == @model.Champions {
     calc_def_stat_champions(
       def_base,
       nature_num=def_num,
@@ -152,9 +152,8 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
     sr.def_rank_positive_mask,
     sr.def_rank_negative_mask,
   )
-  def_stat = apply_rank(def_stat, def_stage)
 
-  // 2b. Ability stat modifiers
+  // 2b-atk. Attacker-side ability stat modifier (independent of def_stage).
   if is_body_press {
     if atk_ability.length() > 0 {
       atk_stat = apply_def_ability_stat(atk_ability, true, atk_stat)
@@ -164,27 +163,19 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
       atk_ability, is_physical, weather, field, atk_stat,
     )
   }
-  if def_ability.length() > 0 {
-    def_stat = apply_def_ability_stat(def_ability, is_physical, def_stat)
-  }
 
-  // 2b-2. Ruin ability cross-side stat modifiers
-  // ボディプレスの場合、攻撃値として使われるのは自身のDefenseなので
-  // わざわいのおふだ（相手の物理Atkを下げる）は影響しない。
-  // わざわいのつるぎ（相手の物理Defを下げる）は通常通り適用される。
-  if is_body_press {
-    if atk_ability == "わざわいのつるぎ" {
-      def_stat = def_stat * 3 / 4
+  // 2b-2-atk. Atk-side ruin (defender's ability lowers attacker's stat).
+  // ボディプレスは攻撃値として自分の Defense を使うため、わざわいのおふだ
+  // / うつわ の影響を受けない。
+  if not(is_body_press) {
+    match def_ability {
+      "わざわいのおふだ" => if is_physical { atk_stat = atk_stat * 3 / 4 }
+      "わざわいのうつわ" => if !is_physical { atk_stat = atk_stat * 3 / 4 }
+      _ => ()
     }
-  } else if atk_ability.length() > 0 || def_ability.length() > 0 {
-    let (new_atk, new_def) = apply_ruin_cross_stat(
-      atk_ability, def_ability, is_physical, atk_stat, def_stat,
-    )
-    atk_stat = new_atk
-    def_stat = new_def
   }
 
-  // 2c. Item stat modifiers
+  // 2c-atk. Attacker-side item stat modifier.
   if is_body_press {
     if atk_item.length() > 0 {
       atk_stat = apply_def_item_stat(atk_item, true, atk_stat)
@@ -197,29 +188,50 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
       atk_stat,
     )
   }
-  if def_item.length() > 0 {
-    def_stat = apply_def_item_stat(def_item, is_physical, def_stat)
+
+  // 2d-atk. Body-press: atk_stat is a Defense value, so apply 雪×こおり Def boost.
+  if is_body_press && weather.is_active() {
+    atk_stat = apply_weather_def_mod(
+      weather,
+      (atk.type1, atk.type2),
+      true,
+      atk_stat,
+    )
   }
 
-  // 2d. Weather defense modifiers
-  if weather.is_active() {
-    def_stat = apply_weather_def_mod(
-      weather,
-      (dfn.type1, dfn.type2),
-      is_physical,
-      def_stat,
-    )
-    // ボディプレスは自身のDefenseが攻撃値なので、攻撃側にも雪×こおりの
-    // Def 1.5倍補正を適用する。
-    if is_body_press {
-      atk_stat = apply_weather_def_mod(
-        weather,
-        (atk.type1, atk.type2),
-        true,
-        atk_stat,
-      )
+  // Defense-side pipeline factored as a closure so multi-hit じきゅうりょく
+  // can recompute from raw_def_stat at any rank stage. Floor-sensitive
+  // modifiers (しんかのきせき / とつげきチョッキ / ファーコート / Sand SpD /
+  // Snow Def) must run AFTER the rank multiplier each time, otherwise
+  // ratio-scaling the post-modifier value drifts (e.g. Eviolite on base
+  // Def 101: stage 0 → floor(101*1.5)=151; stage +2 → floor(202*1.5)=303,
+  // not 151*2=302).
+  let compute_def_at_stage = fn(stage : Int) -> Int {
+    let mut s = apply_rank(raw_def_stat, stage)
+    if def_ability.length() > 0 {
+      s = apply_def_ability_stat(def_ability, is_physical, s)
     }
+    // 2b-2-def. Def-side ruin (attacker's ability lowers defender's stat).
+    if is_body_press {
+      if atk_ability == "わざわいのつるぎ" {
+        s = s * 3 / 4
+      }
+    } else {
+      match atk_ability {
+        "わざわいのつるぎ" => if is_physical { s = s * 3 / 4 }
+        "わざわいのたま" => if !is_physical { s = s * 3 / 4 }
+        _ => ()
+      }
+    }
+    if def_item.length() > 0 {
+      s = apply_def_item_stat(def_item, is_physical, s)
+    }
+    if weather.is_active() {
+      s = apply_weather_def_mod(weather, (dfn.type1, dfn.type2), is_physical, s)
+    }
+    s
   }
+  let def_stat = compute_def_at_stage(def_stage)
 
   // Immunity check
   if def_ability.length() > 0 && check_def_immunity(def_ability, move_type) {
@@ -236,29 +248,38 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   // 3. Power calculation
   // 威力可変技 (おはかまいり / 体重依存 / つけあがる / アシストパワー /
   // やけっぱち / はたきおとす / たたりめ) は variable_power.mbt に集約。
-  let mut effective_power = resolve_variable_power(
+  // TripleVariant (トリプルキック / トリプルアクセル) は hit ごとに base_power
+  // が変わるので、ability/item/type-resist の最終チェインだけ closure 化して
+  // hit ごとに再適用する (variable_power はこれらの move では恒等関数なので
+  // 入口で 1 度だけ呼ぶ)。
+  let resolved_var_power = resolve_variable_power(
     move_power, mv, input, dfn, atk, atk_ability, def_ability,
   )
-  if atk_ability.length() > 0 {
-    effective_power = apply_atk_ability_power(
-      atk_ability, move_name, move_type, effective_power, weather,
-      force_contact=sr.force_contact,
-    )
-  }
-  if atk_item.length() > 0 {
-    effective_power = apply_type_boost_item(
-      atk_item, move_type, effective_power,
-    )
-  }
-  if type_resist_mult != 1.0 {
-    effective_power = {
-      let p = (effective_power.to_double() * type_resist_mult).to_int()
-      if p < 1 {
-        1
-      } else {
-        p
-      }
+  let apply_power_modifiers = fn(base : Int) -> Int {
+    let mut p = base
+    if atk_ability.length() > 0 {
+      p = apply_atk_ability_power(
+        atk_ability, move_name, move_type, p, weather,
+        force_contact=sr.force_contact,
+      )
     }
+    if atk_item.length() > 0 {
+      p = apply_type_boost_item(atk_item, move_type, p)
+    }
+    if type_resist_mult != 1.0 {
+      let q = (p.to_double() * type_resist_mult).to_int()
+      p = if q < 1 { 1 } else { q }
+    }
+    p
+  }
+  let mut effective_power = apply_power_modifiers(resolved_var_power)
+
+  // Skin abilities (フェアリースキン / スカイスキン / フリーズスキン / エレキスキン).
+  // Gen 7+ では技タイプ変換に加えて base power に 1.2x (4915/4096) を直接乗せる。
+  // Gen 6 仕様 (STAB 後の damage modifier として 1.3x) とは丸めの位置が異なるため、
+  // ここで power modifier として適用する必要がある。Showdown 準拠。
+  if skin_bonus {
+    effective_power = round5(effective_power, 4915)
   }
 
   // Type effectiveness (using x4 integer encoding)
@@ -312,9 +333,23 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
   // it at quarter power for the 2nd hit (Showdown-accurate per-hit pipeline).
   // All non-power state (stat, ability, item, wall, STAB, type effectiveness,
   // Tinted Lens) is closed over and shared between the two invocations.
-  let compute_rolls = fn(eff_pow : Int) -> FixedArray[Int] {
+  // `hit_def_stat` is the defender's Defense after the full ability/item/
+  // weather pipeline at this hit's rank stage. For じきゅうりょく the multi-
+  // hit loop recomputes via `compute_def_at_stage` so floor-sensitive
+  // modifiers (Eviolite / Assault Vest / Sand / Snow / Fur Coat) round at
+  // each stage rather than being ratio-scaled from a single anchor value.
+  // `apply_resist_berry` gates the per-roll resist-berry power_mod. Multi-hit
+  // moves consume the berry on the first qualifying hit; subsequent hits
+  // must run without the halving even though the same `compute_rolls`
+  // closure is reused for them. Single-hit callers always pass `true`.
+  let compute_rolls = fn(
+    eff_pow : Int,
+    hit_def_stat : Int,
+    apply_resist_berry : Bool,
+  ) -> FixedArray[Int] {
     let safe_pow = if eff_pow < 1 { 1 } else { eff_pow }
-    let inner = 22 * safe_pow * atk_stat / def_stat
+    let safe_def = if hit_def_stat < 1 { 1 } else { hit_def_stat }
+    let inner = 22 * safe_pow * atk_stat / safe_def
     let damage_base = inner / 50 + 2
     let out : FixedArray[Int] = FixedArray::make(16, 0)
     for idx = 0; idx < 16; idx = idx + 1 {
@@ -353,11 +388,6 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
       // STAB
       if has_stab {
         dmg = round5(dmg, stab_mult)
-      }
-
-      // Skin bonus
-      if skin_bonus {
-        dmg = round5(dmg, 4915)
       }
 
       // Type effectiveness (integer fraction)
@@ -410,8 +440,10 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
         }
       }
 
-      // Resist berry
-      if def_item.length() > 0 {
+      // Resist berry. Skipped past the first hit of a multi-hit move so the
+      // berry doesn't halve every hit (it is consumed on the first qualifying
+      // hit and gone for the rest of the move).
+      if apply_resist_berry && def_item.length() > 0 {
         let berry_type = get_resist_berry_type(def_item)
         if berry_type.length() > 0 && berry_type == move_type {
           if def_item == "ホズのみ" || is_super_effective {
@@ -429,11 +461,7 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
     }
     out
   }
-  let damages = compute_rolls(effective_power)
-  let percents : FixedArray[Double] = FixedArray::make(16, 0.0)
-  for i = 0; i < 16; i = i + 1 {
-    percents[i] = damages[i].to_double() / def_hp.to_double() * 100.0
-  }
+  let damages = compute_rolls(effective_power, def_stat, true)
 
   // Disguise: ばけのかわ の初撃は実ダメージを素通し、状態遷移だけ行う。
   // State transition precedes any multi-hit expansion — disguise absorbs the
@@ -442,56 +470,182 @@ pub fn calc_damage(input : @model.DamageCalcInput) -> @model.DamageCalcResult {
     return disguise_blocked_result(def_hp)
   }
 
-  // Multi-hit post-processing. Parental Bond's 2nd hit is now computed by
-  // re-running the full 16-roll pipeline at 1/4 base power (Gen7+ spec). This
-  // is Showdown-accurate: every modifier (STAB, Skin, type eff., abilities,
-  // walls, items, berries, min-1 floor) is applied independently to each hit.
+  // Multi-hit post-processing. Parental Bond's 2nd hit re-runs the full
+  // 16-roll pipeline at 1/4 base power (Gen7+ spec, Showdown-accurate).
   let hit_plan = resolve_hit_plan(mv, atk_ability, input.multi_hit_mode)
-  let (final_damages, final_percents, hits_dealt) : (
-    FixedArray[Int],
-    FixedArray[Double],
-    Int,
-  ) = match hit_plan {
-    Single => (damages, percents, 1)
-    FixedHits(n) => {
-      let out : FixedArray[Int] = FixedArray::make(16, 0)
-      let pct : FixedArray[Double] = FixedArray::make(16, 0.0)
-      for i = 0; i < 16; i = i + 1 {
-        out[i] = damages[i] * n
-        pct[i] = out[i].to_double() / def_hp.to_double() * 100.0
+
+  // Resolve the chance-node probability distribution. Random2to5 fans out
+  // into 4 variants (without Skill Link), TripleVariant into 3 with the
+  // mid-flight-miss weights, others stay deterministic with prob 1.0.
+  // multi_hit_mode が Auto のときは shared helper に委ねる; explicit
+  // Fixed(n) だけは hit_plan が `FixedHits(n)` を抱えているのでこちらで
+  // 単一エントリに畳む。
+  let plan_distribution : Array[(Int, Double)] = match input.multi_hit_mode {
+    @model.MultiHit::Auto => resolve_hit_distribution(mv, atk_ability)
+    @model.MultiHit::Fixed(_) =>
+      match hit_plan {
+        FixedHits(n) => [(n, 1.0)]
+        Single => [(1, 1.0)]
+        ParentalBond => [(2, 1.0)]
+        TripleVariant(_) => [(1, 0.10), (2, 0.09), (3, 0.81)]
       }
-      (out, pct, n)
-    }
-    ParentalBond => {
-      // 2nd hit at 1/4 power, full pipeline.
-      let pow2 = effective_power / 4
-      let damages2 = compute_rolls(pow2)
-      let out : FixedArray[Int] = FixedArray::make(16, 0)
-      let pct : FixedArray[Double] = FixedArray::make(16, 0.0)
-      for i = 0; i < 16; i = i + 1 {
-        out[i] = damages[i] + damages2[i]
-        pct[i] = out[i].to_double() / def_hp.to_double() * 100.0
-      }
-      (out, pct, 2)
-    }
+    @model.MultiHit::Expected =>
+      abort(
+        "MultiHit::Expected is a payoff-only approximation; pkdx damage does not accept it",
+      )
   }
 
-  // KO calculation (using final_damages so multi-hit totals count toward KOs).
-  let min_d = final_damages[0]
-  let max_d = final_damages[15]
-  let ko_text = calc_ko_text(final_damages, def_hp)
+  // Pre-compute Parental Bond's second-hit damage outside the hit loop so
+  // each variant's hits[h] can pick it up cheaply. The 2nd hit never re-fires
+  // a resist berry — it was either consumed by the 1st hit or did not match.
+  let pb_second_damages : FixedArray[Int]? = match hit_plan {
+    ParentalBond => Some(compute_rolls(effective_power / 4, def_stat, false))
+    _ => None
+  }
+  // P1-A (#100): contact フラグは StatResolution.force_contact を優先する。
+  // シェルアームズ 物理モード等の動的接触判定が、HitStep.contact と payoff
+  // 側 contact-proc fanout から漏れないようにここで一本化する。
+  let move_is_contact = resolve_move_contact(mv, sr.force_contact)
+  // Pre-compute the no-berry damage table for hits past the first when the
+  // move is multi-hit. Single-hit moves never consult this. The branch
+  // bypasses re-running the closure when the per-hit defense stage is
+  // unchanged from entry.
+  let need_no_berry_table = match hit_plan {
+    Single => false
+    _ => true
+  }
+  let damages_no_berry : FixedArray[Int]? = if need_no_berry_table {
+    Some(compute_rolls(effective_power, def_stat, false))
+  } else {
+    None
+  }
+  // P2-B (#92): defender's じきゅうりょく ramps Defense by +1 after each
+  // landed hit (capped at +6 from entry stage). The variants loop passes
+  // the resulting `def_stage + offset` to `compute_def_at_stage` per hit
+  // and surfaces `def_stage_after` to downstream payoff fanout (#93/#97).
+  let stamina_active = is_stamina_ability(def_ability) && triggers_stamina(mv)
+
+  // Build the variants[] payload. Each variant carries one hits_count
+  // possibility and its probability mass.
+  let variants : Array[@model.DamageVariant] = []
+  for vi = 0; vi < plan_distribution.length(); vi = vi + 1 {
+    let (hits_count, prob) = plan_distribution[vi]
+    let hits : Array[@model.HitStep] = []
+    let cumulative : FixedArray[Int] = FixedArray::make(16, 0)
+    for h = 0; h < hits_count; h = h + 1 {
+      // Stage seen by hit h's damage roll: entry + h prior stamina procs,
+      // clamped at +6. Stage AFTER hit h = entry + (h + 1) clamped.
+      let this_offset = if stamina_active {
+        let target = def_stage + h
+        let clamped = if target > 6 { 6 } else { target }
+        clamped - def_stage
+      } else {
+        0
+      }
+      let after_stage = if stamina_active {
+        let next = def_stage + h + 1
+        if next > 6 { 6 } else { next }
+      } else {
+        def_stage
+      }
+      // TripleVariant (トリプルキック / トリプルアクセル) は hit が当たる
+      // ごとに base_power が hit 番号ぶん上昇する: hit 1 = base、hit 2 =
+      // base*2、hit 3 = base*3。すいりゅうれんだ / トリプルダイブ は
+      // FixedHits(3) なのでこの分岐には落ちず、固定 base_power で 3 回殴る。
+      // じきゅうりょく が active かつ stage が変わる hit では、防御側の
+      // ability/item/weather チェインを raw_def_stat から組み直して
+      // 床関数誤差を排除する (Eviolite / 突撃チョッキ 等)。
+      let hit_def_stat = if stamina_active && this_offset != 0 {
+        compute_def_at_stage(def_stage + this_offset)
+      } else {
+        def_stat
+      }
+      // Resist berry は 1 hit 目だけ消費されるので apply_berry_here で gating する。
+      let apply_berry_here = h == 0
+      let this_damages = match (hit_plan, h, pb_second_damages) {
+        (ParentalBond, 1, Some(d2)) =>
+          if stamina_active && this_offset != 0 {
+            compute_rolls(effective_power / 4, hit_def_stat, false)
+          } else {
+            d2
+          }
+        (TripleVariant(_), _, _) => {
+          let per_hit_pow = apply_power_modifiers(resolved_var_power * (h + 1))
+          compute_rolls(per_hit_pow, hit_def_stat, apply_berry_here)
+        }
+        _ =>
+          if this_offset == 0 {
+            if apply_berry_here {
+              damages
+            } else {
+              match damages_no_berry {
+                Some(d) => d
+                None => damages
+              }
+            }
+          } else {
+            compute_rolls(effective_power, hit_def_stat, apply_berry_here)
+          }
+      }
+      hits.push({
+        damage_per_roll: this_damages,
+        def_stage_after: after_stage,
+        contact: move_is_contact,
+        event: None,
+      })
+      for j = 0; j < 16; j = j + 1 {
+        cumulative[j] = cumulative[j] + this_damages[j]
+      }
+    }
+    let v_min = cumulative[0]
+    let v_max = cumulative[15]
+    let v_ko = calc_ko_text(cumulative, def_hp)
+    variants.push({
+      probability: prob,
+      hits,
+      hits_count,
+      total_damages: cumulative,
+      min: v_min,
+      max: v_max,
+      ko_text: v_ko,
+    })
+  }
+
+  // Pick the most-likely variant for legacy field derivation. Ties on
+  // probability resolve to the higher hits_count to preserve old behavior
+  // — Random2to5 was previously collapsed to FixedHits(3), so the new
+  // most-likely on the 0.375/0.375 tie should keep hits=3 (not 2).
+  let mut best_idx = 0
+  for i = 1; i < variants.length(); i = i + 1 {
+    let cur = variants[i]
+    let best = variants[best_idx]
+    let strictly_better = cur.probability > best.probability
+    let tie_higher_hits = cur.probability == best.probability &&
+      cur.hits_count > best.hits_count
+    if strictly_better || tie_higher_hits {
+      best_idx = i
+    }
+  }
+  let chosen = variants[best_idx]
+  let final_damages = chosen.total_damages
+  let final_percents : FixedArray[Double] = FixedArray::make(16, 0.0)
+  for i = 0; i < 16; i = i + 1 {
+    final_percents[i] = final_damages[i].to_double() / def_hp.to_double() *
+      100.0
+  }
   @model.DamageCalcResult::{
     damages: final_damages,
     percents: final_percents,
-    min_damage: min_d,
-    max_damage: max_d,
+    min_damage: chosen.min,
+    max_damage: chosen.max,
     min_percent: final_percents[0],
     max_percent: final_percents[15],
-    ko_text,
+    ko_text: chosen.ko_text,
     defender_hp: def_hp,
     is_immune: false,
     disguise_blocked: false,
-    hits_dealt,
+    hits_dealt: chosen.hits_count,
+    variants,
   }
 }
 
@@ -548,8 +702,15 @@ fn weight_ratio_power(atk_weight : Double, def_weight : Double) -> Int {
 
 ///|
 fn immune_result(def_hp : Int) -> @model.DamageCalcResult {
+  let zero_damages : FixedArray[Int] = FixedArray::make(16, 0)
+  let immune_step : @model.HitStep = {
+    damage_per_roll: zero_damages,
+    def_stage_after: 0,
+    contact: false,
+    event: None,
+  }
   @model.DamageCalcResult::{
-    damages: FixedArray::make(16, 0),
+    damages: zero_damages,
     percents: FixedArray::make(16, 0.0),
     min_damage: 0,
     max_damage: 0,
@@ -560,6 +721,19 @@ fn immune_result(def_hp : Int) -> @model.DamageCalcResult {
     is_immune: true,
     disguise_blocked: false,
     hits_dealt: 1,
+    // Single-variant payload preserves the invariant
+    // `variants.length() >= 1` for downstream consumers.
+    variants: [
+      {
+        probability: 1.0,
+        hits: [immune_step],
+        hits_count: 1,
+        total_damages: zero_damages,
+        min: 0,
+        max: 0,
+        ko_text: "immune",
+      },
+    ],
   }
 }
 
@@ -567,8 +741,12 @@ fn immune_result(def_hp : Int) -> @model.DamageCalcResult {
 /// Disguise initial hit: no damage dealt; state transition (1/8 max HP chip)
 /// is the caller's responsibility.
 fn disguise_blocked_result(def_hp : Int) -> @model.DamageCalcResult {
+  let zero_damages : FixedArray[Int] = FixedArray::make(16, 0)
+  // Disguise's intercepted hit deals no damage but the move did connect
+  // — represent it as a single variant with hits.length() == 0 to mark
+  // that no hit landed (hits_count == 0 also signals the absorbed hit).
   @model.DamageCalcResult::{
-    damages: FixedArray::make(16, 0),
+    damages: zero_damages,
     percents: FixedArray::make(16, 0.0),
     min_damage: 0,
     max_damage: 0,
@@ -579,6 +757,17 @@ fn disguise_blocked_result(def_hp : Int) -> @model.DamageCalcResult {
     is_immune: false,
     disguise_blocked: true,
     hits_dealt: 0,
+    variants: [
+      {
+        probability: 1.0,
+        hits: [],
+        hits_count: 0,
+        total_damages: zero_damages,
+        min: 0,
+        max: 0,
+        ko_text: "けがわブロック",
+      },
+    ],
   }
 }
 
