@@ -23,11 +23,13 @@ flowchart LR
 
   subgraph CLI_LAYER[pkdx CLI]
     CLI[main.mbt dispatch] --> WithDB{DB要る?}
-    WithDB -->|Yes| DB[(pokedex.db + pkdx_patch)]
+    WithDB -->|version=champions| CDB[(champions.db<br/>+ ATTACH pokedex)]
+    WithDB -->|other version| PDB[(pokedex.db)]
     WithDB -->|No| STDIN[stdin JSON]
   end
 
-  DB --> CLI
+  CDB --> CLI
+  PDB --> CLI
   STDIN --> CLI
   CLI --> Stdout[stdout JSON/table/MD]
 
@@ -256,14 +258,18 @@ flowchart TD
   Cmd --> MD[meta-divergence]
 
   Q --> T1[pokedex_name + local_pokedex_*]
+  Q --> CT1[champions.pokemon + pokemon_name]
   MV --> T2[local_waza + local_waza_language]
-  MV --> T3[champions_learnset]
+  MV --> CT2[champions.move + learnset]
   MV --> TMM[move_meta LEFT JOIN]
   SR --> T1
+  SR --> CT1
   DMG --> T2
+  DMG --> CT2
   DMG --> TMM
   LR --> T1
   LR --> T2
+  LR --> CT2
   TC -.-> Static[[types/chart.mbt 静的テーブル]]
   CV -.-> Static
   SC -.-> Static
@@ -278,10 +284,12 @@ flowchart TD
 
   STDIN_JSON --> PayoffLayer[payoff/ module]
 
-  T1 --> DB[(pokedex.db)]
-  T2 --> DB
-  T3 --> DB
-  TMM --> DB
+  T1 --> PDB[(pokedex.db)]
+  T2 --> PDB
+  TMM --> PDB
+  CT1 --> CDB[(champions.db)]
+  CT2 --> CDB
+  CDB -.ATTACH AS pokedex.-> PDB
 ```
 
 ## 6. payoff 内部フロー (pkdx select の内側)
@@ -341,19 +349,25 @@ stateDiagram-v2
   note right of Trans
     UseMove x UseMove:
       turn_order_sign(優先度→effective_speed)
-      dmg = mean_damage_cached(DamageCache hit/miss++)
+      per_side_attempt: accuracy / paralyze full / sleep /
+        recharge の Bernoulli 試行 (行動可否のみ)
+      damage_variants_cached → DamageOutcome[]
+        (multi-hit hits_count 分布: 1 / 3 / 4 / 10 / ParentalBond)
+      apply_damage_variants_fanout: 各 variant ごとに
+        with_hp_damage → with_post_hit_effects (recoil /
+        self_ko / stat_effects) → contact-proc fanout
+        (per-hit Bernoulli 1-(1-p)^n) → secondary status
       先攻KO で後攻スキップ
-      stat_effects でランク更新 (clamp_rank)
     UseMove x Switch:
       交代側ランクリセット
-      残る攻撃は新 active に当たる
+      残る攻撃は新 active に当たる (variants fanout 適用)
     Switch x UseMove: 対称
     Switch x Switch:
       両者 active 更新 + 両ランクリセット
       damage なし
   end note
 
-  Trans --> Child: 子 state で value 再帰
+  Trans --> Child: 各 chance-node leaf で value 再帰
   Child --> Check: 再帰入る
 
   Loop --> Solve
@@ -372,7 +386,7 @@ stateDiagram-v2
 flowchart LR
   subgraph DB_LAYER[DB layer]
     W[local_waza] --> JW["wl.name, w.type, w.category,\npower, accuracy, pp"]
-    MM[move_meta\npkdx_patch/006] --> JMM[name_ja, priority, stat_effects_json]
+    MM[move_meta\npkdx_patch/002] --> JMM[name_ja, priority, stat_effects_json]
     W -.LEFT JOIN.-> MM
   end
 

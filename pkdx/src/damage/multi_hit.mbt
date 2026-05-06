@@ -16,6 +16,8 @@ pub(all) enum HitSpec {
   SingleHit
   FixedHit(Int)
   Random2to5
+  // #91: per-hit 90% continuation, 1..10 hits. ネズミざん (Population Bomb).
+  PopulationBomb
 } derive(Show, Eq)
 
 ///|
@@ -23,6 +25,18 @@ pub(all) enum HitPlan {
   Single
   FixedHits(Int)
   ParentalBond
+  // P1-A (#90): probabilistic 1/2/3-hit moves with mid-flight miss
+  // (トリプルアクセル / トリプルキック). Distinct from FixedHits(3) because
+  // the latter never misses mid-attack (すいりゅうれんだ / トリプルダイブ).
+  // The carried name is preserved so downstream engine code can branch on
+  // move-specific power scaling once #90's variants[] is wired through.
+  TripleVariant(String)
+  // #91: 1..10 hits with per-hit 90% continuation probability. ネズミざん.
+  // Unlike TripleVariant, the move-level miss is handled separately by
+  // per_side_attempt — `expand_variants` returns the distribution
+  // conditioned on the move connecting at all. Hit count distribution:
+  // p(N) = 0.9^(N-1) * 0.1 for N=1..9, p(10) = 0.9^9. Σ = 1.0.
+  PopulationBomb(String)
 } derive(Show, Eq)
 
 ///|
@@ -45,6 +59,14 @@ let fixed_3_hit : Array[String] = [
 ]
 
 ///|
+/// Subset of `fixed_3_hit` whose hits can miss mid-attack — Triple Kick and
+/// Triple Axel ramp power per landed hit. 各 hit 命中率 90% を直に展開する
+/// と、移動が成功した (= hit 1 が当たった) 条件下での landed-hit 分布は
+/// p(1)=0.10, p(2)=0.09, p(3)=0.81 になる。すいりゅうれんだ /
+/// トリプルダイブ are deterministic 3-hits and stay on FixedHits(3).
+let triple_variant_hit : Array[String] = ["トリプルキック", "トリプルアクセル"]
+
+///|
 /// Moves that hit 2-5 times with the standard distribution
 /// (P(2)=P(3)=3/8, P(4)=P(5)=1/8 → E[n] = 19/6). Under Skill Link they
 /// upgrade to fixed 5; Auto collapses them to the center value 3.
@@ -60,6 +82,13 @@ let random_2_5_hit : Array[String] = [
   "つっぱり",
   "スケイルショット",
 ]
+
+///|
+/// #91: Population Bomb-class moves — 1..10 hits with per-hit 90%
+/// continuation probability. Listed separately from `random_2_5_hit`
+/// because the distribution is fundamentally different (geometric, not
+/// the standard 2-5 weighted).
+let population_bomb : Array[String] = ["ネズミざん"]
 
 ///|
 fn in_set(s : String, set : Array[String]) -> Bool {
@@ -80,6 +109,8 @@ pub fn resolve_auto_hits(name : String) -> HitSpec {
     FixedHit(3)
   } else if in_set(name, random_2_5_hit) {
     Random2to5
+  } else if in_set(name, population_bomb) {
+    PopulationBomb
   } else {
     SingleHit
   }
@@ -121,7 +152,105 @@ pub fn resolve_hit_plan(
   }
   match base {
     SingleHit => Single
-    FixedHit(n) => FixedHits(n)
+    FixedHit(n) =>
+      if n == 3 && in_set(mv.name, triple_variant_hit) {
+        TripleVariant(mv.name)
+      } else {
+        FixedHits(n)
+      }
     Random2to5 => FixedHits(3)
+    PopulationBomb => HitPlan::PopulationBomb(mv.name)
+  }
+}
+
+///|
+/// Probability distribution over hit counts for the variants[] payload.
+/// Returns `[(hits_count, probability)]` whose probabilities sum to 1.0.
+/// Used by `engine.mbt`'s multi-hit post-process to construct
+/// `Array[DamageVariant]`.
+///
+/// - `Single` / `FixedHits(n)` / `ParentalBond` → 1 entry, probability 1.0
+/// - `TripleVariant(_)` → [(1, 0.10), (2, 0.09), (3, 0.81)]
+///   (per-hit 90% accuracy conditioned on the move connecting at all)
+/// - Random2to5-resolved-to-Auto-FixedHits(3) carries the deterministic
+///   fallback; the Random2to5 case is handled separately via
+///   `expand_random_2_5_variants` because the HitPlan does not preserve
+///   the original Random2to5 spec (Auto collapses it).
+pub fn expand_variants(plan : HitPlan) -> Array[(Int, Double)] {
+  match plan {
+    Single => [(1, 1.0)]
+    FixedHits(n) => [(n, 1.0)]
+    ParentalBond => [(2, 1.0)]
+    TripleVariant(_) => [(1, 0.10), (2, 0.09), (3, 0.81)]
+    HitPlan::PopulationBomb(_) => population_bomb_distribution()
+  }
+}
+
+///|
+/// #91: Population Bomb hit-count distribution conditioned on the move
+/// connecting (move accuracy is handled by `per_side_attempt`).
+///
+/// Each successive hit lands with 90% continuation probability:
+/// - p(N) = 0.9^(N-1) * 0.1 for N=1..9 (the run terminates after hit N)
+/// - p(10) = 0.9^9 (all 10 hits landed)
+///
+/// Σ = 0.1 * (1 + 0.9 + ... + 0.9^8) + 0.9^9
+///   = 0.1 * (1 - 0.9^9) / (1 - 0.9) + 0.9^9
+///   = (1 - 0.9^9) + 0.9^9 = 1.0 (within FP rounding).
+fn population_bomb_distribution() -> Array[(Int, Double)] {
+  let arr : Array[(Int, Double)] = []
+  let mut acc = 1.0
+  for n = 1; n <= 9; n = n + 1 {
+    arr.push((n, acc * 0.1))
+    acc = acc * 0.9
+  }
+  arr.push((10, acc))
+  arr
+}
+
+///|
+/// Random2to5 hit-count distribution, used when the move resolves to
+/// `Random2to5` from `resolve_auto_hits` (i.e. without Skill Link). Smogon
+/// distribution: P(2)=P(3)=3/8, P(4)=P(5)=1/8.
+///
+/// Skill Link upgrades Random2to5 to `FixedHits(5)` *before* this is
+/// consulted, so `expand_random_2_5_variants` is only called for the
+/// non-Skill-Link path.
+pub fn expand_random_2_5_variants() -> Array[(Int, Double)] {
+  [(2, 0.375), (3, 0.375), (4, 0.125), (5, 0.125)]
+}
+
+///|
+/// Full hit-count probability distribution for Auto-mode multi-hit
+/// resolution. Folds `expand_variants` and `expand_random_2_5_variants`
+/// behind a single entrypoint so callers (engine.mbt's variants loop and
+/// payoff/switching_game's contact-proc fanout) share the source of
+/// truth for "given this move + ability, how many landed hits should we
+/// expect with what probabilities".
+///
+/// Random2to5 is the only branch that needs the auto_spec lookup —
+/// HitPlan collapses it to `FixedHits(3)` when Auto fires, losing the
+/// 4-way distribution otherwise.
+pub fn resolve_hit_distribution(
+  mv : @model.Move,
+  atk_ability : String,
+) -> Array[(Int, Double)] {
+  let auto_spec = resolve_auto_hits(mv.name)
+  let plan = resolve_hit_plan(mv, atk_ability, @model.MultiHit::Auto)
+  match plan {
+    Single => [(1, 1.0)]
+    ParentalBond => [(2, 1.0)]
+    TripleVariant(_) => [(1, 0.10), (2, 0.09), (3, 0.81)]
+    HitPlan::PopulationBomb(_) => population_bomb_distribution()
+    FixedHits(n) =>
+      match auto_spec {
+        Random2to5 =>
+          if atk_ability == "スキルリンク" {
+            [(n, 1.0)]
+          } else {
+            expand_random_2_5_variants()
+          }
+        _ => [(n, 1.0)]
+      }
   }
 }

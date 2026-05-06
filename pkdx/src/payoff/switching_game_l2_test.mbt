@@ -4,10 +4,10 @@
 /// separate `DamageCache` instances: the first populates L2, the second
 /// should see at least one disk-hit.
 test "switching_game_winrate: L2 disk cache survives across DamageCache instances" {
-  let path = "/tmp/pkdx_sw_l2_test.sqlite"
+  let path = "pkdx_sw_l2_test.sqlite"
   let _ = @db.unlink_file(path)
   guard
-    @damage_cache.open_or_init(path, "0.4.10", "head-a") is Ok(disk) else {
+    @damage_cache.open_or_init(path, "0.4.10") is Ok(disk) else {
     fail("open_or_init failed")
   }
 

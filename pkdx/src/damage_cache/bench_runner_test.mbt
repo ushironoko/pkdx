@@ -2,9 +2,9 @@
 /// With a fixed key and an initially empty cache, the first iteration is a
 /// miss and the remaining iterations are hits.
 test "run_bench: fixed-key counts — miss=1, hit=I-1" {
-  let path = "/tmp/pkdx_bench_runner_test_fixed.sqlite"
+  let path = "pkdx_bench_runner_test_fixed.sqlite"
   let _ = @db.unlink_file(path)
-  guard open_or_init(path, "0.4.10", "head-a") is Ok(cache) else {
+  guard open_or_init(path, "0.4.10") is Ok(cache) else {
     fail("open_or_init failed")
   }
   let report = run_bench(cache, "fixed-key", 5, fn() { "{\"ok\":1}" })
@@ -19,9 +19,9 @@ test "run_bench: fixed-key counts — miss=1, hit=I-1" {
 ///|
 /// seed_dummy_entries populates the requested number of rows.
 test "run_bench: seed_dummy_entries inserts N rows" {
-  let path = "/tmp/pkdx_bench_runner_test_seed.sqlite"
+  let path = "pkdx_bench_runner_test_seed.sqlite"
   let _ = @db.unlink_file(path)
-  guard open_or_init(path, "0.4.10", "head-a") is Ok(cache) else {
+  guard open_or_init(path, "0.4.10") is Ok(cache) else {
     fail("open_or_init failed")
   }
   guard seed_dummy_entries(cache, 50) is Ok(_) else {
@@ -40,9 +40,9 @@ test "run_bench: seed_dummy_entries inserts N rows" {
 ///|
 /// format_bench_report_tsv produces a header plus one row per phase.
 test "run_bench: TSV formatter emits 7 lines (1 header + 6 phases)" {
-  let path = "/tmp/pkdx_bench_runner_test_fmt.sqlite"
+  let path = "pkdx_bench_runner_test_fmt.sqlite"
   let _ = @db.unlink_file(path)
-  guard open_or_init(path, "0.4.10", "head-a") is Ok(cache) else {
+  guard open_or_init(path, "0.4.10") is Ok(cache) else {
     fail("open_or_init failed")
   }
   let report = run_bench(cache, "k", 3, fn() { "v" })

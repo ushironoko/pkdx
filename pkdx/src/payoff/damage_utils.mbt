@@ -4,27 +4,62 @@
 /// mean-damage reduction and the canonical `DamageCalcInput` builder.
 
 ///|
-/// Mean damage over the 16-roll table. Zero for immune matchups.
-///
-/// ばけのかわが剥がれる初撃は engine が `damages=0` + `disguise_blocked=true`
-/// を返す。このターン攻撃側は実ダメを 0 しか稼げないが、防御側は 1/8 の
-/// chip ダメージを払う (Gen7 以降仕様) ので、payoff 層で「このターンの相手
-/// への与ダメ期待値」を評価する上では 0 ではなく `max_hp / 8` 固定を加算
-/// する方が現実に近い。本関数ではこれを固定加算として織り込む。
+/// Mean damage for scalar payoff callers (`monte_carlo`, `team_monte_carlo`,
+/// `cli_nash.mean_damage_ratio`). Now delegates to `expected_damage` so that
+/// chance-node moves (Random2to5 / TripleVariant) report the probability-
+/// weighted mean over `variants[]` instead of the most-likely variant's
+/// central value. ばけのかわ chip add-on / immune zero are handled inside
+/// `expected_damage_variants`, so callers see a single coherent formula.
 fn avg_damage(r : @model.DamageCalcResult) -> Double {
+  expected_damage(r)
+}
+
+///|
+/// Per-variant mean damage paired with the variant's probability. The
+/// pair list sums to (probability, mean) over all chance-node outcomes
+/// surfaced by the engine's hit-by-hit `variants[]` payload.
+///
+/// Disguise / immune still collapse to a single zero entry — the
+/// special chip add-on for ばけのかわ stays where `avg_damage` puts it
+/// (in the legacy scalar path) so #91's incremental rollout doesn't
+/// have to retune those edge cases.
+fn expected_damage_variants(
+  r : @model.DamageCalcResult,
+) -> Array[(Double, Double)] {
   if r.is_immune {
-    return 0.0
+    return [(1.0, 0.0)]
   }
-  let mut s = 0
-  for i in 0..<16 {
-    s += r.damages[i]
-  }
-  let base = s.to_double() / 16.0
   if r.disguise_blocked {
-    base + r.defender_hp.to_double() / 8.0
-  } else {
-    base
+    // Disguise's intercepted hit deals 0 + chip; keep the legacy single
+    // outcome so callers reading expected_damage match avg_damage.
+    return [(1.0, r.defender_hp.to_double() / 8.0)]
   }
+  let out : Array[(Double, Double)] = []
+  for i = 0; i < r.variants.length(); i = i + 1 {
+    let v = r.variants[i]
+    let mut sum = 0
+    for j = 0; j < v.total_damages.length(); j = j + 1 {
+      sum = sum + v.total_damages[j]
+    }
+    let mean = sum.to_double() / v.total_damages.length().to_double()
+    out.push((v.probability, mean))
+  }
+  out
+}
+
+///|
+/// Probability-weighted expected damage. The single-turn payoff path
+/// (cli_select / team_payoff) uses this to compute scalar payoffs
+/// without expanding the game tree. Equal to avg_damage when there's
+/// only one variant; for multi-variant moves it's the chance-node mean.
+fn expected_damage(r : @model.DamageCalcResult) -> Double {
+  let pairs = expected_damage_variants(r)
+  let mut acc = 0.0
+  for i = 0; i < pairs.length(); i = i + 1 {
+    let (p, mean) = pairs[i]
+    acc = acc + p * mean
+  }
+  acc
 }
 
 ///|

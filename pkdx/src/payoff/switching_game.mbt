@@ -56,6 +56,13 @@ pub(all) struct SwitchingGameState {
   // Reset on switch (fresh entrant never starts recharging).
   my_must_recharge : Array[Bool]
   opp_must_recharge : Array[Bool]
+  // P5 (#97): per-slot held-item consumption flag. Set to `true` once the
+  // slot's held item triggers (resist berry weakness reduction, きあいのタスキ
+  // KO survival, フィラのみ HP heal). Persists across switches — a consumed
+  // berry doesn't reappear when the holder switches back in. Length = team
+  // size; aligns with my_megaed / my_status indexing.
+  my_item_consumed : Array[Bool]
+  opp_item_consumed : Array[Bool]
   turn : Int
 } derive(Show, Eq, Hash)
 
@@ -217,6 +224,7 @@ pub fn maybe_apply_status_fanout(
   target_slot : Int,
   target_team : Array[Combatant],
   mv : @model.Move,
+  hits_count~ : Int = 1,
 ) -> Array[(Double, SwitchingGameState)] {
   let eff = match mv.status_effect {
     None => return [(1.0, state)]
@@ -241,14 +249,568 @@ pub fn maybe_apply_status_fanout(
   ) {
     return [(1.0, state)]
   }
-  let p = chance.to_double() / 100.0
+  // #91 Phase 2-C: per-hit independent secondary roll. p_per_hit = chance/100,
+  // p_set after `hits_count` hits = 1 - (1 - p_per_hit)^hits_count. hits_count
+  // defaults to 1 to preserve legacy single-hit semantics for callers that
+  // have not yet been migrated to pass the variant-specific count.
+  let p_per_hit = chance.to_double() / 100.0
+  let n = if hits_count < 1 { 1 } else { hits_count }
+  let mut q = 1.0
+  for _i = 0; _i < n; _i = _i + 1 {
+    q = q * (1.0 - p_per_hit)
+  }
+  let p = 1.0 - q
   if p >= 1.0 {
     return [(1.0, with_status_set(state, target_is_me, target_slot, kind))]
+  }
+  if p <= 0.0 {
+    return [(1.0, state)]
   }
   [
     (1.0 - p, state),
     (p, with_status_set(state, target_is_me, target_slot, kind)),
   ]
+}
+
+///|
+/// Contact-proc chance node (#93 / P4): when the attacker hits the
+/// defender with a contact move, the defender's ability or held item
+/// can inflict a status on the attacker. Mirrors the
+/// `maybe_apply_status_fanout` shape so `compose_fanouts` can append
+/// it as another `Array[(prob, state)]` step.
+///
+/// MVP scope:
+///   - abilities: ほのおのからだ / せいでんき / どくしゅ / ほうし
+///     (status procs at 30%, see `damage.contact_proc_ability`)
+///   - items: とびだすハバネロ / とびだすなかみ (100% procs)
+///   - recoil-style abilities (てつのトゲ / さめはだ) are deterministic
+///     HP shaves, modelled in damage application rather than as a
+///     chance node, and stay out of this fanout.
+///
+/// `attacker_is_me` says which side just attacked; the inflicted
+/// status lands on that side. `defender_team` is the side whose
+/// ability / item triggers, `attacker_team` is consulted for type
+/// immunity (electric immune to paralysis, fire immune to burn, etc).
+///
+/// 多段技 (#100): 各 contact 着弾は独立に判定し、1 hit 内では ability proc →
+/// item proc の順に逐次解決する (Showdown / Gen9 仕様)。
+/// q_a = 1 - viable_ability_chance/100、q_i = 1 - viable_item_chance/100、
+/// 1 hit あたりの kind k 設定確率 p_set_k = a_k/100 + q_a × i_k/100。
+/// hit_dist で q_total^n = (q_a × q_i)^n を畳んで終端 no-status 確率を求める。
+/// ability + item を 1 つの categorical roll に flatten すると、せいでんき
+/// (paralyze 30%) + とびだすハバネロ (burn 100%) のような異 kind 合算で
+/// 30/130 vs 100/130 という、どちらの解決順でも再現できない不可能な分布が
+/// 出る (合算 130% を 100 に cap してしまうため)。逐次モデルでは ability 先行
+/// で 30% para + 70% burn が正しい。
+/// シェルアームズ 物理モード等の動的 contact (force_contact) も damage engine
+/// と同じ `resolve_stat_resolution` 経由で判定する。
+/// 加えて mega 後の ability/stats を反映する: `effective_combatant` を
+/// 通すことで Mega Kangaskhan の おやこあい (Parental Bond で 2-hit 化) や
+/// Mega Heracross の スキルリンク (Random2to5 → 5-hit) が contact proc 計算
+/// にも乗る。
+pub fn apply_contact_proc_fanout(
+  state : SwitchingGameState,
+  attacker_is_me : Bool,
+  attacker_slot : Int,
+  defender_slot : Int,
+  attacker_team : Array[Combatant],
+  defender_team : Array[Combatant],
+  mv : @model.Move,
+  hits_count~ : Int? = None,
+) -> Array[(Double, SwitchingGameState)] {
+  // mega 後の ability/stats を damage 計算側と同じ経路で解決する。
+  // raw team の ability を読むと Mega Kangaskhan の おやこあい や
+  // Mega Heracross の スキルリンク が反映されず、hit 分布が damage と
+  // ズレてしまう。
+  let atk_megaed = if attacker_is_me {
+    state.my_megaed[attacker_slot]
+  } else {
+    state.opp_megaed[attacker_slot]
+  }
+  let def_megaed = if attacker_is_me {
+    state.opp_megaed[defender_slot]
+  } else {
+    state.my_megaed[defender_slot]
+  }
+  let attacker = effective_combatant(attacker_team[attacker_slot], atk_megaed)
+  let defender = effective_combatant(defender_team[defender_slot], def_megaed)
+  // 動的 contact (シェルアームズ) を engine と同じ判定で解決する。
+  let sr = @damage.resolve_stat_resolution(
+    mv,
+    atk_atk=attacker.pokemon.atk,
+    atk_spa=attacker.pokemon.spa,
+    def_def=defender.pokemon.def_,
+    def_spd=defender.pokemon.spd,
+    atk_ability=attacker.ability,
+    def_ability=defender.ability,
+    critical=false,
+  )
+  if not(@damage.resolve_move_contact(mv, sr.force_contact)) {
+    return [(1.0, state)]
+  }
+  // move 自体が連結しないケース (type immunity / ability immunity) は
+  // contact proc を起こさない。Showdown / Gen9 では「damage が解決された hit」
+  // のみが contact proc trigger になるため、たいあたり (ノーマル) を ほのおの
+  // からだ 持ちゴーストに当てても やけど branch を生んではならない。damage
+  // engine 側の immunity 判定 (engine.mbt の check_def_immunity / 18x18 type
+  // chart) と同じ条件をここでも踏み、payoff が虚偽の status branch で揺れる
+  // のを防ぐ。
+  // 動的タイプ書き換え (フェアリースキン等の Skin / Weather Ball) を engine と
+  // 同じ経路で解決する。raw `mv.type_` で immunity を判定すると、たとえば
+  // フェアリースキン + たいあたり (raw Normal, effective Fairy) を ゴースト
+  // 防御に当てたとき engine は damage を解決するのに fanout 側だけ Normal × Ghost
+  // で immune 扱いし burn branch を落としてしまう。逆に エレキスキン contact 技 →
+  // ひらいしん 防御は engine が ability immunity で 0 ダメージを返すのに、raw
+  // Normal では check_def_immunity が false を返すため、虚偽の proc branch が
+  // 出る。payoff の weather は build_input_with_ranks と同じく None 固定。
+  let resolved_move_type = @damage.resolve_effective_move_type(
+    mv, @model.Weather::None, attacker.ability,
+  )
+  if @damage.check_def_immunity(defender.ability, resolved_move_type) {
+    return [(1.0, state)]
+  }
+  match @types.type_from_jp(resolved_move_type) {
+    Some(at) =>
+      match @types.type_from_jp(defender.pokemon.type1) {
+        Some(d1) => {
+          let e1 = @types.get_effectiveness_x4(at, d1)
+          let e2 = if defender.pokemon.type2.length() > 0 {
+            match @types.type_from_jp(defender.pokemon.type2) {
+              Some(d2) => @types.get_effectiveness_x4(at, d2)
+              None => 4
+            }
+          } else {
+            4
+          }
+          if e1 == 0 || e2 == 0 {
+            return [(1.0, state)]
+          }
+        }
+        None => ()
+      }
+    None => ()
+  }
+  // 各 hit 内で defender の ability proc → item proc の順に独立判定する
+  // (Showdown / Gen9 仕様)。両者を一つの categorical roll に畳むと
+  // mathematically invalid: せいでんき (paralyze 30%) + とびだすハバネロ
+  // (burn 100%) では能力先行で 30% para + 70% burn になるが、合算 130%
+  // モデルでは 30/130 vs 100/130 が出てしまい、どの順でも再現できない。
+  // q_a = 1 - viable_ability_chance/100、q_i = 1 - viable_item_chance/100。
+  // 1 hit あたりの kind k 設定確率 = a_k/100 + q_a × i_k/100。
+  let ability_procs = @damage.contact_proc_ability(defender.ability)
+  let item_procs = @damage.contact_proc_item(defender.item)
+  if ability_procs.length() == 0 && item_procs.length() == 0 {
+    return [(1.0, state)]
+  }
+  let attacker_hps = if attacker_is_me { state.my_hps } else { state.opp_hps }
+  if attacker_hps[attacker_slot] <= 0 {
+    return [(1.0, state)]
+  }
+  let attacker_status = if attacker_is_me {
+    state.my_status
+  } else {
+    state.opp_status
+  }
+  if attacker_status[attacker_slot] != @model.None {
+    return [(1.0, state)]
+  }
+  // viable proc のみ採用 (タイプ耐性で fizzle した proc は status を残さない
+  // ので q への寄与もしない)。
+  let viable_ability : Array[(@model.StatusKind, Int)] = []
+  let mut viable_ability_chance = 0
+  for i = 0; i < ability_procs.length(); i = i + 1 {
+    let (kind, chance) = ability_procs[i]
+    if chance <= 0 {
+      continue
+    }
+    if @model.immune_to_status(
+      kind, attacker.pokemon.type1, attacker.pokemon.type2,
+    ) {
+      continue
+    }
+    viable_ability_chance = viable_ability_chance + chance
+    viable_ability.push((kind, chance))
+  }
+  let viable_item : Array[(@model.StatusKind, Int)] = []
+  let mut viable_item_chance = 0
+  for i = 0; i < item_procs.length(); i = i + 1 {
+    let (kind, chance) = item_procs[i]
+    if chance <= 0 {
+      continue
+    }
+    if @model.immune_to_status(
+      kind, attacker.pokemon.type1, attacker.pokemon.type2,
+    ) {
+      continue
+    }
+    viable_item_chance = viable_item_chance + chance
+    viable_item.push((kind, chance))
+  }
+  if viable_ability.length() == 0 && viable_item.length() == 0 {
+    return [(1.0, state)]
+  }
+  // 各 source は単発の roll なので 100% に cap。current data では既に <=100 だが、
+  // 将来データ拡張 (proc 同士の合算や cap 越え item 追加) で破綻しないよう保険。
+  let cap_a = if viable_ability_chance > 100 { 100 } else { viable_ability_chance }
+  let cap_i = if viable_item_chance > 100 { 100 } else { viable_item_chance }
+  let q_a = 1.0 - cap_a.to_double() / 100.0
+  let q_i = 1.0 - cap_i.to_double() / 100.0
+  let q_total = q_a * q_i
+  // kind ごとの per-hit 設定確率 = a_k/100 + q_a × i_k/100。
+  // ability エントリを先に積んでから item エントリを順次合流させ、ability 側の
+  // 既存 kind には q_a × i_k を加算、新規 kind は q_a × i_k で push。
+  // 同じ kind を持つ ability + item (せいでんき + とびだすなかみ) はここで
+  // 1 エントリに畳まれ、leaf 数増を防ぐ。
+  let combined : Array[(@model.StatusKind, Double)] = []
+  for i = 0; i < viable_ability.length(); i = i + 1 {
+    let (kind, chance) = viable_ability[i]
+    combined.push((kind, chance.to_double() / 100.0))
+  }
+  for i = 0; i < viable_item.length(); i = i + 1 {
+    let (kind, chance) = viable_item[i]
+    let item_contrib = q_a * chance.to_double() / 100.0
+    let mut merged = false
+    for j = 0; j < combined.length(); j = j + 1 {
+      let (kind_j, set_j) = combined[j]
+      if kind_j == kind {
+        combined[j] = (kind_j, set_j + item_contrib)
+        merged = true
+        break
+      }
+    }
+    if not(merged) {
+      combined.push((kind, item_contrib))
+    }
+  }
+  // #91 Phase 2-C: variant-specific hits_count を caller が渡してくれば、
+  // q_total^hits_count を直接適用する (compose_fanouts が既に variants ごとに
+  // この関数を呼ぶので fanout 側で hit 分布を fold するのは二重カウントになる
+  // — codex Critical 2)。caller が None を渡したらレガシー経路として
+  // resolve_hit_distribution で fold する (旧 callsite との後方互換)。
+  let expected_no_status = match hits_count {
+    Some(n) => {
+      let nn = if n < 0 { 0 } else { n }
+      let mut qn = 1.0
+      for _k = 0; _k < nn; _k = _k + 1 {
+        qn = qn * q_total
+      }
+      qn
+    }
+    None => {
+      let hit_dist = @damage.resolve_hit_distribution(mv, attacker.ability)
+      let mut acc = 0.0
+      for i = 0; i < hit_dist.length(); i = i + 1 {
+        let (n, prob) = hit_dist[i]
+        let mut qn = 1.0
+        for _k = 0; _k < n; _k = _k + 1 {
+          qn = qn * q_total
+        }
+        acc = acc + prob * qn
+      }
+      acc
+    }
+  }
+  let p_set = 1.0 - expected_no_status
+  if p_set <= 1.0e-12 {
+    return [(1.0, state)]
+  }
+  // 100% proc 確定 (per-hit q_total = 0 で 1 hit 以上) + 単一 viable kind なら 1 leaf。
+  if expected_no_status <= 1.0e-12 && combined.length() == 1 {
+    let (kind, _) = combined[0]
+    return [(1.0, with_status_set(state, attacker_is_me, attacker_slot, kind))]
+  }
+  // 各 kind の最終発火確率: p_set × per_hit_set_k / (1 - q_total)。
+  // per_hit_set の合計は 1 - q_total に等しいので、これは「proc が起きた」
+  // 条件下の kind 分布で按分しているのと同値 (Markov 終端分布)。
+  let denom = 1.0 - q_total
+  let outcomes : Array[(Double, SwitchingGameState)] = []
+  outcomes.push((expected_no_status, state))
+  for i = 0; i < combined.length(); i = i + 1 {
+    let (kind, per_hit_set) = combined[i]
+    let mass = p_set * per_hit_set / denom
+    outcomes.push((
+      mass,
+      with_status_set(state, attacker_is_me, attacker_slot, kind),
+    ))
+  }
+  outcomes
+}
+
+///|
+/// Resist-berry consumption tracker (#97 / P5). The engine's damage path
+/// (`damage/engine.mbt`) already applies the berry's 1/2 power_mod on
+/// super-effective hits when the defender's `item` is set, so this
+/// fanout does **not** alter HP. It only flips
+/// `(my|opp)_item_consumed[slot]` to `true` so the next attack on the
+/// same defender stops being halved.
+///
+/// Wiring `item_consumed` into the engine call (so it sees `item = ""`
+/// once the berry is consumed) lives in `damage_utils` (T7); until that
+/// lands, the consumption flag is set here but the engine still re-applies
+/// the resist berry on the second hit. Tests assert the flag transition;
+/// the second-hit double-halving bug is tracked as a P5 follow-up.
+///
+/// Trigger conditions:
+///   - defender's item is a resist berry (`get_resist_berry_type`)
+///   - move type matches the berry's resisted type
+///   - move is super-effective on the defender's typing
+///   - `(my|opp)_item_consumed[slot]` is `false`
+///   - the visible delta `pre_dmg_hp - post_hp` is positive (i.e. damage
+///     was actually dealt)
+///
+/// Single-leaf fanout (probability 1.0).
+///
+/// Mirror the engine's move-type resolution chain (`resolve_move_type_override`
+/// + `get_skin_type`) to the extent payoff cares about. Payoff is weatherless,
+/// so Weather Ball never rewrites here; Skin abilities still need to be
+/// applied because they fire on the attacker independent of weather, and the
+/// engine's resist-berry branch keys off the post-Skin type.
+fn resolve_engine_move_type(mv : @model.Move, atk_ability : String) -> String {
+  let (skin_type, _) = @damage.get_skin_type(atk_ability, mv.type_)
+  skin_type
+}
+
+///|
+pub fn apply_item_pre_damage_proc_fanout(
+  state : SwitchingGameState,
+  defender_is_me : Bool,
+  defender_slot : Int,
+  defender_team : Array[Combatant],
+  attacker_team : Array[Combatant],
+  pre_dmg_hp : Int,
+  mv : @model.Move,
+  hits_count~ : Int = 1,
+) -> Array[(Double, SwitchingGameState)] {
+  // #91 Phase 2-C: hits_count 引数は将来の per-hit item proc 拡張用。現状は
+  // 1 hit しか反映しない resist berry / item consumption ロジックなので、
+  // hits_count 引数を受け取るだけで内部処理は不変 (single-shot consumption)。
+  let _ = hits_count
+  // Defensive: legacy test fixtures sometimes size *_item_consumed shorter
+  // than the corresponding team. Treat out-of-bounds slots as "no berry
+  // wired up at this index" — equivalent to a fresh, unconsumed state.
+  let consumed_arr = if defender_is_me {
+    state.my_item_consumed
+  } else {
+    state.opp_item_consumed
+  }
+  if defender_slot >= consumed_arr.length() {
+    return [(1.0, state)]
+  }
+  let consumed = consumed_arr[defender_slot]
+  if consumed {
+    return [(1.0, state)]
+  }
+  // Resolve mega-aware combatants so post-mega ability/type/stats flow into
+  // berry consumption (#101). Without this, Mega Gardevoir / Mega Pinsir's
+  // フェアリースキン (Normal → Fairy rewrite) would halve damage in the
+  // engine but leave item_consumed unflipped here, so future hits keep
+  // getting halved. defender.pokemon.type1/type2 also moves to post-mega
+  // for the super-effective check.
+  let def_megaed = if defender_is_me {
+    state.my_megaed[defender_slot]
+  } else {
+    state.opp_megaed[defender_slot]
+  }
+  let defender = effective_combatant(
+    defender_team[defender_slot], def_megaed,
+  )
+  let berry_type = @damage.get_resist_berry_type(defender.item)
+  if berry_type.length() == 0 {
+    return [(1.0, state)]
+  }
+  let attacker_active = if defender_is_me {
+    state.opp_active
+  } else {
+    state.my_active
+  }
+  let atk_megaed = if defender_is_me {
+    state.opp_megaed[attacker_active]
+  } else {
+    state.my_megaed[attacker_active]
+  }
+  let attacker = effective_combatant(
+    attacker_team[attacker_active], atk_megaed,
+  )
+  let resolved_type = resolve_engine_move_type(mv, attacker.ability)
+  if resolved_type != berry_type {
+    return [(1.0, state)]
+  }
+  // ホズのみ triggers on any Normal-type hit (including neutral); other
+  // resist berries trigger only on super-effective hits. Mirrors the engine
+  // gate in `damage/engine.mbt`'s resist-berry block.
+  let triggers_on_neutral = defender.item == "ホズのみ"
+  if not(triggers_on_neutral) &&
+    not(
+      @damage.is_super_effective(
+        resolved_type, defender.pokemon.type1, defender.pokemon.type2,
+      ),
+    ) {
+    return [(1.0, state)]
+  }
+  let post_hp = if defender_is_me {
+    state.my_hps[defender_slot]
+  } else {
+    state.opp_hps[defender_slot]
+  }
+  let dealt = pre_dmg_hp - post_hp
+  if dealt <= 0 {
+    return [(1.0, state)]
+  }
+  // Mark consumed; HP is left at the engine-halved value already in `state`.
+  [
+    (
+      1.0,
+      with_hp_and_item_consumed(state, defender_is_me, defender_slot, post_hp),
+    ),
+  ]
+}
+
+///|
+/// Post-damage held-item chance node (#97 / P5). Handles items that fire
+/// *after* damage has been resolved on the defender's HP:
+///
+/// - **きあいのタスキ** (`consume_on_hit`): if the defender entered the
+///   hit at full HP and the hit would have left HP <= 0, the sash is
+///   consumed and HP is set to 1.
+/// - **フィラのみ** (`hp_threshold`): if the defender's post-hit HP is
+///   above 0 and at or below `max_hp / 2`, restore `max_hp / 3` (capped
+///   at `max_hp`) and consume the berry. Healing berries do not revive
+///   a fainted holder.
+///
+/// `pre_dmg_hp` is the defender's HP just before damage was applied at
+/// this attack site — the call sites of `compose_fanouts` capture it.
+/// `mv` is reserved for future move-class gating (e.g. `しおふき` should
+/// not trigger Cell Battery despite being water-type).
+///
+/// Single-leaf fanout (probability 1.0).
+///
+/// `attacker_team` is consulted for the attacker's ability so the multi-hit
+/// detection picks up Parental Bond / Skill Link. きあいのタスキ is gated
+/// out of multi-hit attacks because the aggregate (pre, post) HP pair sees
+/// only the cumulative damage — saving the defender at 1 HP from a multi-hit
+/// KO would be mechanically wrong (Sash should only stop the first hit, and
+/// later hits should still KO).
+pub fn apply_item_post_damage_proc_fanout(
+  state : SwitchingGameState,
+  defender_is_me : Bool,
+  defender_slot : Int,
+  defender_team : Array[Combatant],
+  attacker_team : Array[Combatant],
+  pre_dmg_hp : Int,
+  mv : @model.Move,
+  hits_count~ : Int = 1,
+) -> Array[(Double, SwitchingGameState)] {
+  // #91 Phase 2-C: hits_count 引数は将来の per-hit item proc 拡張用。現状は
+  // single-shot consumption ロジックのみで内部不変。
+  let _ = hits_count
+  // Defensive: see apply_item_pre_damage_proc_fanout for rationale.
+  let consumed_arr = if defender_is_me {
+    state.my_item_consumed
+  } else {
+    state.opp_item_consumed
+  }
+  if defender_slot >= consumed_arr.length() {
+    return [(1.0, state)]
+  }
+  let consumed = consumed_arr[defender_slot]
+  if consumed {
+    return [(1.0, state)]
+  }
+  // Mega-aware (#101): post-mega ability決まる multi-hit が Sash gating に
+  // 効くようにする。Mega Kangaskhan (おやこあい) で raw ability="" のままだと
+  // Single 扱いされ Sash が誤発動、aggregate KO で 1 HP 残してしまう。
+  let def_megaed = if defender_is_me {
+    state.my_megaed[defender_slot]
+  } else {
+    state.opp_megaed[defender_slot]
+  }
+  let defender = effective_combatant(
+    defender_team[defender_slot], def_megaed,
+  )
+  let max_hp = defender.pokemon.hp
+  let post_hp = if defender_is_me {
+    state.my_hps[defender_slot]
+  } else {
+    state.opp_hps[defender_slot]
+  }
+  if defender.item == "きあいのタスキ" &&
+    pre_dmg_hp == max_hp &&
+    post_hp <= 0 {
+    let attacker_active = if defender_is_me {
+      state.opp_active
+    } else {
+      state.my_active
+    }
+    let atk_megaed = if defender_is_me {
+      state.opp_megaed[attacker_active]
+    } else {
+      state.my_megaed[attacker_active]
+    }
+    let attacker = effective_combatant(
+      attacker_team[attacker_active], atk_megaed,
+    )
+    let hit_plan = @damage.resolve_hit_plan(
+      mv, attacker.ability, @model.MultiHit::Auto,
+    )
+    let is_multi_hit = match hit_plan {
+      @damage.HitPlan::Single => false
+      _ => true
+    }
+    if not(is_multi_hit) {
+      return [
+        (
+          1.0,
+          with_hp_and_item_consumed(state, defender_is_me, defender_slot, 1),
+        ),
+      ]
+    }
+    // Multi-hit Sash needs hit-level damage threading to model the "save on
+    // hit 1, KO on hit 2+" mechanic. Until that lands, leave the aggregate
+    // KO untouched rather than incorrectly rescuing the defender.
+  }
+  // フィラのみ requires the hit to *cross* the 1/2-HP threshold: the holder
+  // must have been above max/2 going in and at-or-below max/2 coming out.
+  // Without the `pre_dmg_hp` check, an immune / 0-damage hit on a holder
+  // already at low HP would heal+consume despite no damage having occurred.
+  if defender.item == "フィラのみ" &&
+    post_hp > 0 &&
+    pre_dmg_hp * 2 > max_hp &&
+    post_hp * 2 <= max_hp {
+    let heal = max_hp / 3
+    let new_hp = post_hp + heal
+    let capped = if new_hp > max_hp { max_hp } else { new_hp }
+    return [
+      (
+        1.0,
+        with_hp_and_item_consumed(state, defender_is_me, defender_slot, capped),
+      ),
+    ]
+  }
+  [(1.0, state)]
+}
+
+///|
+/// Copy `state`, write `hp` to the chosen side's `slot`, and mark that
+/// slot's held item as consumed. Used by the P5 item-proc fanouts to
+/// produce a single composite mutation per trigger.
+fn with_hp_and_item_consumed(
+  state : SwitchingGameState,
+  side_is_me : Bool,
+  slot : Int,
+  hp : Int,
+) -> SwitchingGameState {
+  let my_hps = state.my_hps.copy()
+  let opp_hps = state.opp_hps.copy()
+  let my_item_consumed = state.my_item_consumed.copy()
+  let opp_item_consumed = state.opp_item_consumed.copy()
+  if side_is_me {
+    my_hps[slot] = hp
+    my_item_consumed[slot] = true
+  } else {
+    opp_hps[slot] = hp
+    opp_item_consumed[slot] = true
+  }
+  { ..state, my_hps, opp_hps, my_item_consumed, opp_item_consumed }
 }
 
 ///|
@@ -286,6 +848,8 @@ fn with_status_set(
     opp_status,
     my_must_recharge: state.my_must_recharge.copy(),
     opp_must_recharge: state.opp_must_recharge.copy(),
+    my_item_consumed: state.my_item_consumed.copy(),
+    opp_item_consumed: state.opp_item_consumed.copy(),
     turn: state.turn,
   }
 }
@@ -372,6 +936,8 @@ pub fn apply_eot(
     opp_status,
     my_must_recharge: state.my_must_recharge.copy(),
     opp_must_recharge: state.opp_must_recharge.copy(),
+    my_item_consumed: state.my_item_consumed.copy(),
+    opp_item_consumed: state.opp_item_consumed.copy(),
     turn: state.turn,
   }
 }
@@ -680,10 +1246,95 @@ fn apply_burn_to_mean(
 }
 
 ///|
+/// Convert engine `r.variants[]` to per-variant `DamageOutcome` records
+/// with burn folded in. Single source of truth for the engine-result →
+/// outcome adapter, used by both `compute_damage_variants` (in-memory
+/// path) and `compute_and_populate_disk` (L2 populate path) so the per-
+/// variant 16-roll mean + burn computation lives in exactly one place.
+fn outcomes_from_calc_result(
+  r : @model.DamageCalcResult,
+  category : @model.MoveCategory,
+  atk_burn : Bool,
+) -> Array[@model.DamageOutcome] {
+  let outcomes : Array[@model.DamageOutcome] = []
+  for i = 0; i < r.variants.length(); i = i + 1 {
+    let v = r.variants[i]
+    let mut s = 0
+    for j in 0..<16 {
+      s += v.total_damages[j]
+    }
+    let mean = apply_burn_to_mean(s / 16, category, atk_burn)
+    outcomes.push({
+      probability: v.probability,
+      mean_damage: mean,
+      hits_count: v.hits_count,
+      hit_steps: v.hits,
+    })
+  }
+  outcomes
+}
+
+///|
+/// Mirror of `outcomes_from_calc_result` for the L2 read-side path: convert
+/// `ParsedVariant`s decoded from the disk JSON to `DamageOutcome` with burn
+/// folded in. `hit_steps` is empty because the wire format intentionally
+/// omits per-hit detail to keep entries compact — call sites that need
+/// per-hit metadata recompute via `calc_damage`.
+fn outcomes_from_parsed(
+  parsed : Array[@damage_cache.ParsedVariant],
+  category : @model.MoveCategory,
+  atk_burn : Bool,
+) -> Array[@model.DamageOutcome] {
+  let outcomes : Array[@model.DamageOutcome] = []
+  for i = 0; i < parsed.length(); i = i + 1 {
+    let v = parsed[i]
+    let n = v.total_damages.length()
+    let raw_mean = if n == 0 {
+      0
+    } else {
+      let mut s = 0
+      for j = 0; j < n; j = j + 1 {
+        s = s + v.total_damages[j]
+      }
+      s / n
+    }
+    let mean = apply_burn_to_mean(raw_mean, category, atk_burn)
+    outcomes.push({
+      probability: v.probability,
+      mean_damage: mean,
+      hits_count: v.hits_count,
+      hit_steps: [],
+    })
+  }
+  outcomes
+}
+
+///|
+/// Probability-weighted mean of `DamageOutcome`s, floored to Int. Floors
+/// at the very end (not per-variant) to match the legacy `s / 16`
+/// integer-division convention exactly. Single source of truth shared by
+/// L1 (`compute_mean_damage`), L2 read (`mean_damage_via_disk`), and L2
+/// populate (`compute_and_populate_disk`) so future changes to the floor
+/// convention land in one place.
+fn weighted_mean_floor(outcomes : Array[@model.DamageOutcome]) -> Int {
+  let mut acc = 0.0
+  for i = 0; i < outcomes.length(); i = i + 1 {
+    acc = acc + outcomes[i].probability * outcomes[i].mean_damage.to_double()
+  }
+  acc.to_int()
+}
+
+///|
 /// Compute the mean damage for the given `(attacker, defender, move, ranks)`
 /// tuple directly, without cache lookup. The numeric kernel underneath
 /// `mean_damage_cached` — call-sites should reach it via the cache wrapper
 /// so the 16-roll table is not recomputed on every state transition.
+///
+/// Phase 2-B (#91): now derives the scalar mean from `r.variants[]` so it
+/// matches `damage_variants_cached`'s probability-weighted aggregation.
+/// The legacy `r.damages` path used the most-likely variant's 16-roll
+/// average, which collapsed Triple Axel / Random2to5 / PopulationBomb
+/// into a single hits_count instead of weighting all hit-count branches.
 fn compute_mean_damage(
   attacker : Combatant,
   defender : Combatant,
@@ -692,17 +1343,234 @@ fn compute_mean_damage(
   def_rank : Int,
   atk_burn~ : Bool = false,
 ) -> Int {
+  weighted_mean_floor(
+    compute_damage_variants(
+      attacker, defender, mv, atk_rank, def_rank, atk_burn~,
+    ),
+  )
+}
+
+///|
+/// #91: Compute hit-count-fanned damage outcomes for the payoff layer.
+///
+/// Returns one `DamageOutcome` per chance-node leaf (1 entry for single
+/// hits / Skill Link, 3 for Triple Axel, 4 for Random2to5, 10 for
+/// PopulationBomb). `mean_damage` is the variant's 16-roll mean folded
+/// through `apply_burn_to_mean` so callers do not need to re-apply burn
+/// — matching the contract `compute_mean_damage` already exposes.
+///
+/// Immune matchups produce `[(1.0, 0, 0, [])]` so callers always have at
+/// least one outcome to fan out. `hits_count = 0` is *not* used to
+/// represent move miss — that is `per_side_attempt`'s job.
+fn compute_damage_variants(
+  attacker : Combatant,
+  defender : Combatant,
+  mv : @model.Move,
+  atk_rank : Int,
+  def_rank : Int,
+  atk_burn~ : Bool = false,
+) -> Array[@model.DamageOutcome] {
+  // Status moves and zero-power moves never deal damage. Mirror the early
+  // return in `mean_damage_cached` so the variants pipeline does not invent
+  // a stray damage point from the engine's variant table for moves whose
+  // power was clamped to 0 upstream.
+  if mv.power <= 0 {
+    return [
+      { probability: 1.0, mean_damage: 0, hits_count: 1, hit_steps: [] },
+    ]
+  }
   let r = @damage.calc_damage(
     build_input_with_ranks(attacker, defender, mv, atk_rank, def_rank),
   )
   if r.is_immune {
-    return 0
+    return [
+      {
+        probability: 1.0,
+        mean_damage: 0,
+        hits_count: 0,
+        hit_steps: [],
+      },
+    ]
   }
-  let mut s = 0
-  for i in 0..<16 {
-    s += r.damages[i]
+  outcomes_from_calc_result(r, mv.category, atk_burn)
+}
+
+///|
+/// Phase 2-D (#91): expand a single attack-resolution into chance-node leaves
+/// fanning out across hit-count variants.
+///
+/// For each `DamageOutcome` returned by `compute_damage_variants` (1 entry for
+/// Single / Skill Link, 3 for Triple Axel, 4 for Random2to5, 10 for
+/// PopulationBomb), the variant-specific `mean_damage` is applied to defender
+/// HP and the resulting per-variant state is threaded through the four
+/// post-hit fanouts with `hits_count` fixed to that variant's count. The four
+/// fanouts were extended in Phase 2-C to accept `hits_count` so per-hit
+/// secondaries (status secondary, contact proc) compound across the variant's
+/// hits without double-counting through the legacy `resolve_hit_distribution`
+/// fold.
+///
+/// Returns leaves with `outcome.probability * sub_leaf_probability` so summing
+/// over all leaves equals 1.0 within float drift bounds.
+fn apply_damage_variants_fanout(
+  state : SwitchingGameState,
+  outcomes : Array[@model.DamageOutcome],
+  attacker_is_me~ : Bool,
+  attacker_active~ : Int,
+  defender_active~ : Int,
+  attacker_move~ : @model.Move,
+  attacker_team~ : Array[Combatant],
+  defender_team~ : Array[Combatant],
+  pre_dmg_defender_hp~ : Int,
+) -> Array[(Double, SwitchingGameState)] {
+  // Phase 2-E (#91): outcomes are resolved by the caller via
+  // `damage_variants_cached` so that the engine's variant table is
+  // memoised across recursion. Inside this helper we own the per-variant
+  // state mutation and the four post-hit fanouts only.
+  let target_is_me = not(attacker_is_me)
+  let target_slot = defender_active
+  let attacker_slot = attacker_active
+  let leaves : Array[(Double, SwitchingGameState)] = []
+  for i = 0; i < outcomes.length(); i = i + 1 {
+    let outcome = outcomes[i]
+    let state_dmg = with_hp_damage(state, target_is_me, target_slot, outcome.mean_damage)
+    // Phase 2-E (#91): per-variant post-hit state effects so recoil /
+    // self_ko / recharge / stat_effects compound on the variant-specific
+    // damage rather than a single mean. State remains immutable; with_-
+    // post_hit_effects produces a fresh copy with updated arrays.
+    let state_v = with_post_hit_effects(
+      state_dmg,
+      attacker_is_me,
+      attacker_slot,
+      target_slot,
+      attacker_move,
+      outcome.mean_damage,
+    )
+    let sub = compose_fanouts(state_v, [
+      fn(s) {
+        apply_item_pre_damage_proc_fanout(
+          s,
+          target_is_me,
+          target_slot,
+          defender_team,
+          attacker_team,
+          pre_dmg_defender_hp,
+          attacker_move,
+          hits_count=outcome.hits_count,
+        )
+      },
+      fn(s) {
+        apply_item_post_damage_proc_fanout(
+          s,
+          target_is_me,
+          target_slot,
+          defender_team,
+          attacker_team,
+          pre_dmg_defender_hp,
+          attacker_move,
+          hits_count=outcome.hits_count,
+        )
+      },
+      fn(s) {
+        maybe_apply_status_fanout(
+          s,
+          target_is_me,
+          target_slot,
+          defender_team,
+          attacker_move,
+          hits_count=outcome.hits_count,
+        )
+      },
+      fn(s) {
+        apply_contact_proc_fanout(
+          s,
+          attacker_is_me,
+          attacker_slot,
+          target_slot,
+          attacker_team,
+          defender_team,
+          attacker_move,
+          hits_count=Some(outcome.hits_count),
+        )
+      },
+    ])
+    for j = 0; j < sub.length(); j = j + 1 {
+      let (p, s) = sub[j]
+      leaves.push((outcome.probability * p, s))
+    }
   }
-  apply_burn_to_mean(s / 16, mv.category, atk_burn)
+  leaves
+}
+
+///|
+/// Phase 2-D (#91): copy `state` and subtract `damage` from the defender HP
+/// at `target_slot`, clamped to 0. Other arrays are spread-shared from the
+/// input state (post-hit fanouts return fresh states rather than mutating).
+fn with_hp_damage(
+  state : SwitchingGameState,
+  target_is_me : Bool,
+  target_slot : Int,
+  damage : Int,
+) -> SwitchingGameState {
+  let my_hps = state.my_hps.copy()
+  let opp_hps = state.opp_hps.copy()
+  if target_is_me {
+    my_hps[target_slot] = clamp_zero(my_hps[target_slot] - damage)
+  } else {
+    opp_hps[target_slot] = clamp_zero(opp_hps[target_slot] - damage)
+  }
+  { ..state, my_hps, opp_hps }
+}
+
+///|
+/// Phase 2-E (#91): immutable counterpart of `resolve_post_hit_effects`.
+///
+/// Applies the same fixed-order post-hit side effects (stat_effects on
+/// attacker / defender, recoil to attacker, self_ko, recharge) but
+/// returns a fresh state instead of mutating workspace arrays. Used by
+/// `apply_damage_variants_fanout` so each chance-node leaf gets its own
+/// per-variant recoil / self_ko / recharge bookkeeping based on the
+/// variant's `mean_damage`.
+fn with_post_hit_effects(
+  state : SwitchingGameState,
+  attacker_is_me : Bool,
+  attacker_active : Int,
+  defender_active : Int,
+  mv : @model.Move,
+  dmg : Int,
+) -> SwitchingGameState {
+  let my_hps = state.my_hps.copy()
+  let opp_hps = state.opp_hps.copy()
+  let my_ranks = state.my_ranks.copy()
+  let opp_ranks = state.opp_ranks.copy()
+  let my_must_recharge = state.my_must_recharge.copy()
+  let opp_must_recharge = state.opp_must_recharge.copy()
+  let attacker_hps = if attacker_is_me { my_hps } else { opp_hps }
+  let attacker_ranks = if attacker_is_me { my_ranks } else { opp_ranks }
+  let defender_hps = if attacker_is_me { opp_hps } else { my_hps }
+  let defender_ranks = if attacker_is_me { opp_ranks } else { my_ranks }
+  let attacker_must_recharge = if attacker_is_me {
+    my_must_recharge
+  } else {
+    opp_must_recharge
+  }
+  let opp_alive = defender_hps[defender_active] > 0
+  apply_stat_effects(attacker_ranks, defender_ranks, opp_alive, mv)
+  apply_recoil(attacker_hps, attacker_active, mv, dmg)
+  if mv.self_ko {
+    attacker_hps[attacker_active] = 0
+  }
+  if mv.recharge && attacker_hps[attacker_active] > 0 {
+    attacker_must_recharge[attacker_active] = true
+  }
+  {
+    ..state,
+    my_hps,
+    opp_hps,
+    my_ranks,
+    opp_ranks,
+    my_must_recharge,
+    opp_must_recharge,
+  }
 }
 
 ///|
@@ -728,6 +1596,12 @@ pub(all) struct DamageKey {
   // but including the flag for all categories keeps the cache key uniform; the
   // reducer silently no-ops for special / status moves.
   atk_burn : Bool
+  // P5 (#97): held-item consumption flags for both sides. When true the
+  // mean_damage_cached caller has detected a prior berry / sash trigger
+  // and the engine should see `item = ""` instead of the original held
+  // item, so resist berries don't double-halve the second hit.
+  atk_item_consumed : Bool
+  def_item_consumed : Bool
 } derive(Eq, Hash)
 
 ///|
@@ -741,6 +1615,14 @@ pub(all) struct DamageKey {
 /// would be unsound (indices rebind).
 pub(all) struct DamageCache {
   data : @hashmap.HashMap[DamageKey, Int]
+  // Phase 2-E (#91): variants table cache. Mirrors `data` keyed by the same
+  // `DamageKey` shape, but stores the per-variant `DamageOutcome` list so
+  // `apply_damage_variants_fanout` can replay the chance-node leaf expansion
+  // without re-invoking `@damage.calc_damage`. Decoupled from `data` so the
+  // scalar `mean_damage_cached` path (used by Monte Carlo / select / nash
+  // graph CLIs) keeps the smaller Int payload while only the in-game tree
+  // search pays the larger payload cost.
+  variants_data : @hashmap.HashMap[DamageKey, Array[@model.DamageOutcome]]
   // Optional L2 layer backed by SQLite. Populated across sessions — a
   // previous nash solve's 16-roll tables are reused on L1 miss so a
   // slightly-perturbed team doesn't re-pay the damage-engine cost for
@@ -763,6 +1645,7 @@ pub fn new_damage_cache(
 ) -> DamageCache {
   {
     data: @hashmap.HashMap::new(),
+    variants_data: @hashmap.HashMap::new(),
     disk,
     hits: 0,
     misses: 0,
@@ -880,6 +1763,15 @@ fn combatant_to_cache_key_input(
 /// identical. The L2 stored value remains the raw pre-burn 16-roll table,
 /// so one disk entry still serves both burn and non-burn callers.
 ///
+/// #91: must read `variants[]` (not the legacy top-level `damages` field)
+/// so the disk-backed scalar matches `compute_mean_damage`'s probability-
+/// weighted mean for multi-hit moves. The top-level `damages` is the
+/// most-likely variant's roll table — using it would silently regress
+/// Triple Axel / Random2to5 / PopulationBomb on every L2 hit. v3 schema
+/// already invalidates older rows, so any row reaching this code embeds
+/// `variants[]`; absence triggers a recompute rather than a silent
+/// fallback to the legacy field.
+///
 /// Never raises: key-build errors, JSON parse failures, and `put` errors
 /// all fall back to a direct compute so an unusable L2 never blocks the
 /// actual calculation.
@@ -911,15 +1803,16 @@ fn mean_damage_via_disk(
   }
   match @damage_cache.get(disk, key) {
     Some(json) =>
-      match @damage_cache.parse_damages_from_json(json) {
-        Some(damages) => {
+      match @damage_cache.parse_variants_from_json(json) {
+        Some(parsed) => {
           cache.disk_hits = cache.disk_hits + 1
-          apply_burn_to_mean(
-            @damage_cache.mean_of_damages(damages), mv.category, atk_burn,
+          weighted_mean_floor(
+            outcomes_from_parsed(parsed, mv.category, atk_burn),
           )
         }
         None => {
-          // Parse failed → recompute and overwrite.
+          // No variants[] (legacy entry that survived the schema bump,
+          // or malformed JSON) → recompute and overwrite with v3 payload.
           cache.disk_misses = cache.disk_misses + 1
           compute_and_populate_disk(
             disk, key, attacker, defender, mv, atk_rank, def_rank,
@@ -938,9 +1831,15 @@ fn mean_damage_via_disk(
 }
 
 ///|
-/// Run the damage engine, store the pre-burn 16-roll table in L2, and
-/// return the mean damage with burn applied via `apply_burn_to_mean` so
-/// the return value matches `compute_mean_damage` exactly.
+/// Run the damage engine, store the v3 JSON (variants[] embedded) in L2,
+/// and return the mean damage with burn applied so the return value
+/// matches `compute_mean_damage` exactly — even for multi-hit moves.
+///
+/// #91: reduce through `r.variants[]` via `outcomes_from_calc_result` +
+/// `weighted_mean_floor` (the same pair `compute_damage_variants` /
+/// `compute_mean_damage` use) rather than the legacy `r.damages` field
+/// which holds only the most-likely variant. Sharing the helper keeps L2
+/// populate and read paths bit-identical to the L1 path.
 fn compute_and_populate_disk(
   disk : @damage_cache.DamageDiskCache,
   key : String,
@@ -961,11 +1860,7 @@ fn compute_and_populate_disk(
   if r.is_immune {
     return 0
   }
-  let mut s = 0
-  for i in 0..<16 {
-    s += r.damages[i]
-  }
-  apply_burn_to_mean(s / 16, mv.category, atk_burn)
+  weighted_mean_floor(outcomes_from_calc_result(r, mv.category, atk_burn))
 }
 
 ///|
@@ -986,16 +1881,31 @@ pub fn mean_damage_cached(
   atk_mega~ : Bool = false,
   def_mega~ : Bool = false,
   atk_burn~ : Bool = false,
+  atk_item_consumed~ : Bool = false,
+  def_item_consumed~ : Bool = false,
 ) -> Int {
-  let raw_attacker = if my_attacker {
+  let raw_attacker_full = if my_attacker {
     my_team[atk_idx]
   } else {
     opp_team[atk_idx]
   }
-  let raw_defender = if my_attacker {
+  let raw_defender_full = if my_attacker {
     opp_team[def_idx]
   } else {
     my_team[def_idx]
+  }
+  // P5 (#97): swap to itemless combatant copies once a berry / sash has
+  // been consumed so the engine doesn't apply the item effect (resist
+  // berry halving, choice band Atk x1.5 etc.) a second time.
+  let raw_attacker = if atk_item_consumed {
+    { ..raw_attacker_full, item: "" }
+  } else {
+    raw_attacker_full
+  }
+  let raw_defender = if def_item_consumed {
+    { ..raw_defender_full, item: "" }
+  } else {
+    raw_defender_full
   }
   // Move list is identical across mega / base — read the move from the base
   // combatant so that the post-mega synthetic view (which reuses `moves`) is
@@ -1024,6 +1934,8 @@ pub fn mean_damage_cached(
     atk_mega,
     def_mega,
     atk_burn,
+    atk_item_consumed,
+    def_item_consumed,
   }
   match cache.data.get(key) {
     Some(v) => {
@@ -1048,6 +1960,116 @@ pub fn mean_damage_cached(
           )
       }
       cache.data[key] = v
+      v
+    }
+  }
+}
+
+///|
+/// Phase 2-E (#91): variants-table cache wrapper, mirroring
+/// `mean_damage_cached`'s key shape. Returns the per-variant
+/// `Array[DamageOutcome]` for the resolved matchup. Used by attack sites
+/// (resolve_attacker_leg / transition_with_cache attack arms /
+/// partial_act_outcomes) so the chance-node leaf expansion done by
+/// `apply_damage_variants_fanout` reuses the engine's variant table
+/// rather than recomputing it every recursion.
+///
+/// Key shape is identical to `mean_damage_cached` so the two caches stay
+/// in lockstep — the same `DamageKey` resolves to a scalar mean in
+/// `cache.data` and a variants list in `cache.variants_data`. Hit/miss
+/// counters share with the scalar cache (the call site is unique per
+/// (matchup, mv_idx, ranks, mega, burn, item_consumed) tuple).
+fn damage_variants_cached(
+  cache : DamageCache,
+  my_attacker : Bool,
+  atk_idx : Int,
+  atk_ranks : Array[Int],
+  def_idx : Int,
+  def_ranks : Array[Int],
+  mv_idx : Int,
+  my_team : Array[Combatant],
+  opp_team : Array[Combatant],
+  atk_mega~ : Bool = false,
+  def_mega~ : Bool = false,
+  atk_burn~ : Bool = false,
+  atk_item_consumed~ : Bool = false,
+  def_item_consumed~ : Bool = false,
+) -> Array[@model.DamageOutcome] {
+  let raw_attacker_full = if my_attacker {
+    my_team[atk_idx]
+  } else {
+    opp_team[atk_idx]
+  }
+  let raw_defender_full = if my_attacker {
+    opp_team[def_idx]
+  } else {
+    my_team[def_idx]
+  }
+  let raw_attacker = if atk_item_consumed {
+    { ..raw_attacker_full, item: "" }
+  } else {
+    raw_attacker_full
+  }
+  let raw_defender = if def_item_consumed {
+    { ..raw_defender_full, item: "" }
+  } else {
+    raw_defender_full
+  }
+  let mv = raw_attacker.moves[mv_idx]
+  if mv.power <= 0 {
+    return [
+      { probability: 1.0, mean_damage: 0, hits_count: 1, hit_steps: [] },
+    ]
+  }
+  let atk_rank = match mv.category {
+    @model.Physical => atk_ranks[0]
+    @model.Special => atk_ranks[2]
+    @model.Status => 0
+  }
+  let def_rank = match mv.category {
+    @model.Physical => def_ranks[1]
+    @model.Special => def_ranks[3]
+    @model.Status => 0
+  }
+  let key : DamageKey = {
+    my_attacker,
+    atk_idx,
+    def_idx,
+    mv_idx,
+    atk_rank,
+    def_rank,
+    atk_mega,
+    def_mega,
+    atk_burn,
+    atk_item_consumed,
+    def_item_consumed,
+  }
+  match cache.variants_data.get(key) {
+    Some(v) => {
+      cache.hits = cache.hits + 1
+      v
+    }
+    None => {
+      cache.misses = cache.misses + 1
+      let attacker = effective_combatant(raw_attacker, atk_mega)
+      let defender = effective_combatant(raw_defender, def_mega)
+      let v = compute_damage_variants(
+        attacker, defender, mv, atk_rank, def_rank, atk_burn=atk_burn,
+      )
+      cache.variants_data[key] = v
+      // Phase 2-E (#91): touch the L2 disk cache so cross-session damage
+      // entries stay populated. The disk payload is the engine's pre-burn
+      // 16-roll table (scalar), reused by `mean_damage_cached` callers
+      // (Monte Carlo / select / nash graph). Variants serialisation to
+      // disk is deferred — see open question on hit_steps fallback.
+      match cache.disk {
+        Some(_) => {
+          let _ = mean_damage_via_disk(
+            cache, attacker, defender, mv, atk_rank, def_rank, atk_burn=atk_burn,
+          )
+        }
+        None => ()
+      }
       v
     }
   }
@@ -1114,21 +2136,20 @@ fn apply_recoil(
 }
 
 ///|
-/// Post-hit side effects in a single fixed-order pass. Must be invoked at the
-/// end of every attacker leg that actually used a `UseMove` (not a pure
-/// Switch). Damage is assumed already applied to `defender_hps` and `dmg`
-/// is the confirmed amount inflicted this hit.
+/// Workspace-mutating post-hit side effects (legacy attack-site helper).
+///
+/// As of Phase 2-E (#91) the production attack sites use `with_post_hit_-
+/// effects` (immutable, per-variant) — but white-box tests and Monte Carlo
+/// helpers still call this entry point directly to verify the underlying
+/// recoil / self_ko / recharge / stat_effects ordering against a workspace
+/// mutation. Keeping it preserves the semantic contract for both layers.
 ///
 /// Order (deliberate — changing it alters observable behaviour):
-///   1. opp-target `stat_effects` (Phase 3 implements; Phase 2 is self-only
-///      via `apply_stat_boost` so this step has no effect in Phase 2)
+///   1. opp-target `stat_effects` (gated on opp_alive)
 ///   2. self-target `stat_effects`
-///   3. recoil (attacker HP loss)
+///   3. recoil (attacker HP loss; minimum 1 HP for any landed recoil hit)
 ///   4. self_ko (attacker HP forced to 0, regardless of `dmg`)
-///   5. recharge (set only if attacker is still alive after 3 & 4 — a
-///      faint-from-recoil Pokémon cannot later attempt a recharge turn)
-///
-/// `attacker_must_recharge` is mutated in place.
+///   5. recharge (set only if attacker is still alive after 3 & 4)
 fn resolve_post_hit_effects(
   attacker_hps : Array[Int],
   attacker_active : Int,
@@ -1221,6 +2242,8 @@ priv struct TurnWorkspace {
   opp_status : Array[@model.StatusCondition]
   my_must_recharge : Array[Bool]
   opp_must_recharge : Array[Bool]
+  my_item_consumed : Array[Bool]
+  opp_item_consumed : Array[Bool]
   turn : Int
 }
 
@@ -1241,6 +2264,8 @@ fn ws_from_state(state : SwitchingGameState) -> TurnWorkspace {
     opp_status: state.opp_status.copy(),
     my_must_recharge: state.my_must_recharge.copy(),
     opp_must_recharge: state.opp_must_recharge.copy(),
+    my_item_consumed: state.my_item_consumed.copy(),
+    opp_item_consumed: state.opp_item_consumed.copy(),
     turn: state.turn,
   }
 }
@@ -1262,6 +2287,8 @@ fn ws_to_state(ws : TurnWorkspace, bump_turn~ : Bool) -> SwitchingGameState {
     opp_status: ws.opp_status.copy(),
     my_must_recharge: ws.my_must_recharge.copy(),
     opp_must_recharge: ws.opp_must_recharge.copy(),
+    my_item_consumed: ws.my_item_consumed.copy(),
+    opp_item_consumed: ws.opp_item_consumed.copy(),
     turn: if bump_turn { ws.turn + 1 } else { ws.turn },
   }
 }
@@ -1283,12 +2310,32 @@ fn resolve_attacker_leg(
   opp_team : Array[Combatant],
   dmg_cache : DamageCache,
 ) -> Array[(Double, SwitchingGameState)] {
+  // Phase 2-E (#91): damage application + post-hit effects + 4 fanout は
+  // apply_damage_variants_fanout に統合され、variant ごとに chance-node leaf
+  // を生成する。workspace は damage 適用前の状態で state にスナップショット
+  // する (apply_damage_variants_fanout が per-variant に HP/recoil を扱う)。
   let attacker_active = if attacker_is_me { ws.my_active } else { ws.opp_active }
   let defender_active = if attacker_is_me { ws.opp_active } else { ws.my_active }
   let attacker_ranks = if attacker_is_me { ws.my_ranks } else { ws.opp_ranks }
   let defender_ranks = if attacker_is_me { ws.opp_ranks } else { ws.my_ranks }
   let defender_hps = if attacker_is_me { ws.opp_hps } else { ws.my_hps }
-  let dmg = mean_damage_cached(
+  let atk_consumed_arr = if attacker_is_me { ws.my_item_consumed } else { ws.opp_item_consumed }
+  let def_consumed_arr = if attacker_is_me { ws.opp_item_consumed } else { ws.my_item_consumed }
+  let atk_consumed = if attacker_active < atk_consumed_arr.length() {
+    atk_consumed_arr[attacker_active]
+  } else {
+    false
+  }
+  let def_consumed = if defender_active < def_consumed_arr.length() {
+    def_consumed_arr[defender_active]
+  } else {
+    false
+  }
+  let pre_dmg_defender_hp = defender_hps[defender_active]
+  let pre_damage_state = ws_to_state(ws, bump_turn=false)
+  let attacker_team = if attacker_is_me { my_team } else { opp_team }
+  let defender_team_eff = if attacker_is_me { opp_team } else { my_team }
+  let outcomes = damage_variants_cached(
     dmg_cache,
     attacker_is_me,
     attacker_active,
@@ -1301,26 +2348,19 @@ fn resolve_attacker_leg(
     atk_mega=attacker_mega_now,
     def_mega=defender_mega_now,
     atk_burn=attacker_burn,
+    atk_item_consumed=atk_consumed,
+    def_item_consumed=def_consumed,
   )
-  defender_hps[defender_active] = clamp_zero(defender_hps[defender_active] - dmg)
-  let attacker_hps = if attacker_is_me { ws.my_hps } else { ws.opp_hps }
-  let attacker_must_recharge = if attacker_is_me {
-    ws.my_must_recharge
-  } else {
-    ws.opp_must_recharge
-  }
-  resolve_post_hit_effects(
-    attacker_hps, attacker_active, attacker_ranks,
-    defender_hps, defender_active, defender_ranks,
-    attacker_must_recharge, attacker_move, dmg,
-  )
-  let post_damage_state = ws_to_state(ws, bump_turn=false)
-  maybe_apply_status_fanout(
-    post_damage_state,
-    not(attacker_is_me),
-    target_active(post_damage_state, not(attacker_is_me)),
-    if attacker_is_me { opp_team } else { my_team },
-    attacker_move,
+  apply_damage_variants_fanout(
+    pre_damage_state,
+    outcomes,
+    attacker_is_me=attacker_is_me,
+    attacker_active=attacker_active,
+    defender_active=defender_active,
+    attacker_move=attacker_move,
+    attacker_team=attacker_team,
+    defender_team=defender_team_eff,
+    pre_dmg_defender_hp=pre_dmg_defender_hp,
   )
 }
 
@@ -1496,6 +2536,8 @@ fn bump_turn_only(state : SwitchingGameState) -> SwitchingGameState {
     opp_status: state.opp_status.copy(),
     my_must_recharge: state.my_must_recharge.copy(),
     opp_must_recharge: state.opp_must_recharge.copy(),
+    my_item_consumed: state.my_item_consumed.copy(),
+    opp_item_consumed: state.opp_item_consumed.copy(),
     turn: state.turn + 1,
   }
 }
@@ -1544,6 +2586,8 @@ pub fn transition_with_cache(
   let opp_status_new = state.opp_status.copy()
   let my_must_recharge_new = state.my_must_recharge.copy()
   let opp_must_recharge_new = state.opp_must_recharge.copy()
+  let my_item_consumed_new = state.my_item_consumed.copy()
+  let opp_item_consumed_new = state.opp_item_consumed.copy()
   if my_mega_trigger {
     my_megaed_new[state.my_active] = true
   }
@@ -1557,7 +2601,14 @@ pub fn transition_with_cache(
   // Track a single attack event for status fan-out after the state is built.
   // Set to `Some((attacker_is_me, target_slot, used_move))` in the two
   // Switch+UseMove arms; None for pure-Switch / pure-UseMove handled below.
-  let mut attack_event : (Bool, Int, @model.Move)? = None
+  // Phase 2-E (#91): payload extended to (attacker_is_me, target_slot,
+  // used_move, mv_idx) so the Some(...) arm can call damage_variants_cached
+  // with the attacker move's index.
+  let mut attack_event : (Bool, Int, @model.Move, Int)? = None
+  // P5 (#97): defender HP just before damage application — captured at the
+  // damage sites so apply_item_pre/post_damage_proc_fanout can reconstruct
+  // the dealt damage (= pre - post) and gate full-HP triggers (きあいのタスキ).
+  let mut pre_dmg_defender_hp : Int = 0
   match (my_core, opp_core) {
     (Switch(i), Switch(j)) => {
       my_active_new = i
@@ -1582,30 +2633,13 @@ pub fn transition_with_cache(
       my_status_new[state.my_active] = reset_toxic_counter_on_switch(
         my_status_new[state.my_active],
       )
-      // Opponent attacks the freshly switched-in target. The target's mega
-      // flag comes from its slot-level `my_megaed_new[i]` (rather than from
-      // the out-going active's mega state).
-      let dmg = mean_damage_cached(
-        dmg_cache,
-        false,
-        state.opp_active,
-        opp_ranks_new,
-        i,
-        my_ranks_new,
-        mj,
-        my_team,
-        opp_team,
-        atk_mega=opp_mega_now,
-        def_mega=my_megaed_new[i],
-        atk_burn=is_burned(state.opp_status[state.opp_active]),
-      )
-      my_hps_new[i] = clamp_zero(my_hps_new[i] - dmg)
-      resolve_post_hit_effects(
-        opp_hps_new, state.opp_active, opp_ranks_new,
-        my_hps_new, i, my_ranks_new,
-        opp_must_recharge_new, opp_team[state.opp_active].moves[mj], dmg,
-      )
-      attack_event = Some((false, i, opp_team[state.opp_active].moves[mj]))
+      // Phase 2-E (#91): damage application + post-hit effects + 4 fanout
+      // are deferred to apply_damage_variants_fanout in the Some(...) arm
+      // below, which fans the chance-node leaves across hit-count variants.
+      // Only the pre-damage HP snapshot survives in the local mut so the
+      // post-hit fanouts can gate full-HP triggers (resist berry / sash).
+      pre_dmg_defender_hp = my_hps_new[i]
+      attack_event = Some((false, i, opp_team[state.opp_active].moves[mj], mj))
     }
     (UseMove(mi), Switch(j)) => {
       opp_active_new = j
@@ -1615,27 +2649,10 @@ pub fn transition_with_cache(
       opp_status_new[state.opp_active] = reset_toxic_counter_on_switch(
         opp_status_new[state.opp_active],
       )
-      let dmg = mean_damage_cached(
-        dmg_cache,
-        true,
-        state.my_active,
-        my_ranks_new,
-        j,
-        opp_ranks_new,
-        mi,
-        my_team,
-        opp_team,
-        atk_mega=my_mega_now,
-        def_mega=opp_megaed_new[j],
-        atk_burn=is_burned(state.my_status[state.my_active]),
-      )
-      opp_hps_new[j] = clamp_zero(opp_hps_new[j] - dmg)
-      resolve_post_hit_effects(
-        my_hps_new, state.my_active, my_ranks_new,
-        opp_hps_new, j, opp_ranks_new,
-        my_must_recharge_new, my_team[state.my_active].moves[mi], dmg,
-      )
-      attack_event = Some((true, j, my_team[state.my_active].moves[mi]))
+      // Phase 2-E (#91): see (Switch, UseMove) for rationale — damage and
+      // post-hit effects are handled per-variant in the Some(...) arm.
+      pre_dmg_defender_hp = opp_hps_new[j]
+      attack_event = Some((true, j, my_team[state.my_active].moves[mi], mi))
     }
     (UseMove(mi), UseMove(mj)) => {
       let me = my_team[state.my_active]
@@ -1694,18 +2711,81 @@ pub fn transition_with_cache(
     opp_status: opp_status_new,
     my_must_recharge: my_must_recharge_new,
     opp_must_recharge: opp_must_recharge_new,
+    my_item_consumed: my_item_consumed_new,
+    opp_item_consumed: opp_item_consumed_new,
     turn: state.turn + 1,
   }
   match attack_event {
     None => [(1.0, base_state)]
-    Some((attacker_is_me, target_slot, used_move)) =>
-      maybe_apply_status_fanout(
-        base_state,
-        not(attacker_is_me),
+    Some((attacker_is_me, target_slot, used_move, mv_idx)) => {
+      let attacker_slot = target_active(base_state, attacker_is_me)
+      let attacker_ranks = if attacker_is_me {
+        base_state.my_ranks
+      } else {
+        base_state.opp_ranks
+      }
+      let defender_ranks = if attacker_is_me {
+        base_state.opp_ranks
+      } else {
+        base_state.my_ranks
+      }
+      let attacker_team = if attacker_is_me { my_team } else { opp_team }
+      let defender_team_eff = if attacker_is_me { opp_team } else { my_team }
+      let attacker_mega = if attacker_is_me { my_mega_now } else { opp_mega_now }
+      let defender_mega = if attacker_is_me {
+        base_state.opp_megaed[target_slot]
+      } else {
+        base_state.my_megaed[target_slot]
+      }
+      let attacker_burn = if attacker_is_me {
+        is_burned(state.my_status[state.my_active])
+      } else {
+        is_burned(state.opp_status[state.opp_active])
+      }
+      let atk_item_consumed = if attacker_is_me {
+        base_state.my_item_consumed[state.my_active]
+      } else {
+        base_state.opp_item_consumed[state.opp_active]
+      }
+      let def_item_consumed = if attacker_is_me {
+        if target_slot < base_state.opp_item_consumed.length() {
+          base_state.opp_item_consumed[target_slot]
+        } else {
+          false
+        }
+      } else if target_slot < base_state.my_item_consumed.length() {
+        base_state.my_item_consumed[target_slot]
+      } else {
+        false
+      }
+      let outcomes = damage_variants_cached(
+        dmg_cache,
+        attacker_is_me,
+        attacker_slot,
+        attacker_ranks,
         target_slot,
-        if attacker_is_me { opp_team } else { my_team },
-        used_move,
+        defender_ranks,
+        mv_idx,
+        my_team,
+        opp_team,
+        atk_mega=attacker_mega,
+        def_mega=defender_mega,
+        atk_burn=attacker_burn,
+        atk_item_consumed=atk_item_consumed,
+        def_item_consumed=def_item_consumed,
       )
+      apply_damage_variants_fanout(
+        base_state,
+        outcomes,
+        attacker_is_me=attacker_is_me,
+        attacker_active=attacker_slot,
+        defender_active=target_slot,
+        attacker_move=used_move,
+        attacker_team=attacker_team,
+        defender_team=defender_team_eff,
+        pre_dmg_defender_hp=pre_dmg_defender_hp,
+      )
+    }
   }
 }
 
@@ -1798,6 +2878,8 @@ fn pass_turn_state(
     opp_status,
     my_must_recharge: state.my_must_recharge.copy(),
     opp_must_recharge: state.opp_must_recharge.copy(),
+    my_item_consumed: state.my_item_consumed.copy(),
+    opp_item_consumed: state.opp_item_consumed.copy(),
     turn: state.turn + 1,
   }
 }
@@ -1862,6 +2944,8 @@ pub fn attempt_turn_with_cache(
         ),
         my_must_recharge: state.my_must_recharge,
         opp_must_recharge: state.opp_must_recharge,
+        my_item_consumed: state.my_item_consumed,
+        opp_item_consumed: state.opp_item_consumed,
         turn: state.turn,
       }
       let branch_outs : Array[(Double, SwitchingGameState)] = match (
@@ -1929,11 +3013,18 @@ fn partial_act_outcomes(
   let opp_megaed = state.opp_megaed.copy()
   let my_must_recharge = state.my_must_recharge.copy()
   let opp_must_recharge = state.opp_must_recharge.copy()
+  let my_item_consumed = state.my_item_consumed.copy()
+  let opp_item_consumed = state.opp_item_consumed.copy()
   let mut my_active = state.my_active
   let mut opp_active = state.opp_active
   let mut my_mega_used = state.my_mega_used
   let mut opp_mega_used = state.opp_mega_used
-  let mut attack_event : (Bool, Int, @model.Move)? = None
+  // Phase 2-E (#91): payload extended to (attacker_is_me, target_slot,
+  // used_move, mv_idx) so the Some(...) arm can call damage_variants_cached
+  // with the attacker move's index.
+  let mut attack_event : (Bool, Int, @model.Move, Int)? = None
+  // P5 (#97): pre-damage defender HP — see transition_with_cache for rationale.
+  let mut pre_dmg_defender_hp : Int = 0
   match (me_is_actor, core) {
     (true, Switch(i)) => {
       my_active = i
@@ -1958,21 +3049,13 @@ fn partial_act_outcomes(
         my_megaed[state.my_active] = true
         my_mega_used = true
       }
-      let mega_now = my_megaed[state.my_active] || mega_trigger
-      let burn = is_burned(state.my_status[state.my_active])
-      let dmg = mean_damage_cached(
-        dmg_cache, true, state.my_active, my_ranks, state.opp_active, opp_ranks,
-        mi, my_team, opp_team, atk_mega=mega_now, def_mega=opp_megaed[state.opp_active],
-        atk_burn=burn,
-      )
-      opp_hps[state.opp_active] = clamp_zero(opp_hps[state.opp_active] - dmg)
-      resolve_post_hit_effects(
-        my_hps, state.my_active, my_ranks,
-        opp_hps, state.opp_active, opp_ranks,
-        my_must_recharge, my_team[state.my_active].moves[mi], dmg,
-      )
+      // Phase 2-E (#91): damage application + post-hit effects + 4 fanout
+      // are handled per-variant in the Some(...) arm via
+      // apply_damage_variants_fanout. Pre-damage HP is captured here so
+      // resist-berry / sash gating can compare against full HP.
+      pre_dmg_defender_hp = opp_hps[state.opp_active]
       attack_event = Some(
-        (true, state.opp_active, my_team[state.my_active].moves[mi]),
+        (true, state.opp_active, my_team[state.my_active].moves[mi], mi),
       )
     }
     (false, UseMove(mj)) => {
@@ -1980,21 +3063,10 @@ fn partial_act_outcomes(
         opp_megaed[state.opp_active] = true
         opp_mega_used = true
       }
-      let mega_now = opp_megaed[state.opp_active] || mega_trigger
-      let burn = is_burned(state.opp_status[state.opp_active])
-      let dmg = mean_damage_cached(
-        dmg_cache, false, state.opp_active, opp_ranks, state.my_active, my_ranks,
-        mj, my_team, opp_team, atk_mega=mega_now, def_mega=my_megaed[state.my_active],
-        atk_burn=burn,
-      )
-      my_hps[state.my_active] = clamp_zero(my_hps[state.my_active] - dmg)
-      resolve_post_hit_effects(
-        opp_hps, state.opp_active, opp_ranks,
-        my_hps, state.my_active, my_ranks,
-        opp_must_recharge, opp_team[state.opp_active].moves[mj], dmg,
-      )
+      // Phase 2-E (#91): see (true, UseMove) for rationale.
+      pre_dmg_defender_hp = my_hps[state.my_active]
       attack_event = Some(
-        (false, state.my_active, opp_team[state.opp_active].moves[mj]),
+        (false, state.my_active, opp_team[state.opp_active].moves[mj], mj),
       )
     }
     (_, _) => ()
@@ -2014,18 +3086,85 @@ fn partial_act_outcomes(
     opp_status: opp_status_copy,
     my_must_recharge,
     opp_must_recharge,
+    my_item_consumed,
+    opp_item_consumed,
     turn: state.turn + 1,
   }
   match attack_event {
     None => [(1.0, base_state)]
-    Some((attacker_is_me, target_slot, used_move)) =>
-      maybe_apply_status_fanout(
-        base_state,
-        not(attacker_is_me),
+    Some((attacker_is_me, target_slot, used_move, mv_idx)) => {
+      let attacker_slot = target_active(base_state, attacker_is_me)
+      let attacker_ranks = if attacker_is_me {
+        base_state.my_ranks
+      } else {
+        base_state.opp_ranks
+      }
+      let defender_ranks = if attacker_is_me {
+        base_state.opp_ranks
+      } else {
+        base_state.my_ranks
+      }
+      let attacker_team = if attacker_is_me { my_team } else { opp_team }
+      let defender_team_eff = if attacker_is_me { opp_team } else { my_team }
+      let attacker_mega = if attacker_is_me {
+        base_state.my_megaed[state.my_active]
+      } else {
+        base_state.opp_megaed[state.opp_active]
+      }
+      let defender_mega = if attacker_is_me {
+        base_state.opp_megaed[target_slot]
+      } else {
+        base_state.my_megaed[target_slot]
+      }
+      let attacker_burn = if attacker_is_me {
+        is_burned(state.my_status[state.my_active])
+      } else {
+        is_burned(state.opp_status[state.opp_active])
+      }
+      let atk_item_consumed = if attacker_is_me {
+        base_state.my_item_consumed[state.my_active]
+      } else {
+        base_state.opp_item_consumed[state.opp_active]
+      }
+      let def_item_consumed = if attacker_is_me {
+        if target_slot < base_state.opp_item_consumed.length() {
+          base_state.opp_item_consumed[target_slot]
+        } else {
+          false
+        }
+      } else if target_slot < base_state.my_item_consumed.length() {
+        base_state.my_item_consumed[target_slot]
+      } else {
+        false
+      }
+      let outcomes = damage_variants_cached(
+        dmg_cache,
+        attacker_is_me,
+        attacker_slot,
+        attacker_ranks,
         target_slot,
-        if attacker_is_me { opp_team } else { my_team },
-        used_move,
+        defender_ranks,
+        mv_idx,
+        my_team,
+        opp_team,
+        atk_mega=attacker_mega,
+        def_mega=defender_mega,
+        atk_burn=attacker_burn,
+        atk_item_consumed=atk_item_consumed,
+        def_item_consumed=def_item_consumed,
       )
+      apply_damage_variants_fanout(
+        base_state,
+        outcomes,
+        attacker_is_me=attacker_is_me,
+        attacker_active=attacker_slot,
+        defender_active=target_slot,
+        attacker_move=used_move,
+        attacker_team=attacker_team,
+        defender_team=defender_team_eff,
+        pre_dmg_defender_hp=pre_dmg_defender_hp,
+      )
+    }
   }
 }
 
@@ -2270,6 +3409,8 @@ pub fn switching_game_winrate_stats(
     opp_status: zero_status(opp_team.length()),
     my_must_recharge: Array::make(my_team.length(), false),
     opp_must_recharge: Array::make(opp_team.length(), false),
+    my_item_consumed: Array::make(my_team.length(), false),
+    opp_item_consumed: Array::make(opp_team.length(), false),
     turn: 0,
   }
   let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap::new()
