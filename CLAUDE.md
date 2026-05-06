@@ -208,8 +208,45 @@ bin/pkdx migrate --repo-root .
 # 1. moon.mod.json の version を編集
 # 2. 同期スクリプトを実行
 scripts/sync_version.sh
-# 3. moon.mod.json と version.mbt をコミット
+# 3. ローカルバイナリをリビルド (必須)
+cd pkdx && moon build --target native --release src/main
+# 4. moon.mod.json と version.mbt をコミット
 ```
+
+Step 3 を飛ばすと、ローカルセッションの `pkdx context --json` (SessionStart hook) が
+`version_drift=true` を返し続ける。バイナリに焼き込まれた `pkdx_version` と
+`moon.mod.json` の `version` を比較して drift を検知している。
+配布バイナリ (GitHub Releases) を使っているユーザーには影響しない。
+
+### SessionStart で `version_drift_message` を見たとき
+
+エージェントは `pkdx context --json` の結果に `version_drift_message` が含まれて
+いる (= 空文字でない) 場合、ユーザーへ以下を伝える:
+
+- ローカル pkdx バイナリと repo の version が乖離している事実
+- メッセージに含まれる再ビルド手順 (通常は `./setup.sh` 再実行 or
+  `cd pkdx && moon build --target native --release src/main`)
+
+drift があるとダメージ計算や migration 等の挙動と SSoT が一致しない可能性がある
+ため、放置せず最初に通知する。
+
+### `pkdx context --json` 出力スキーマ
+
+SessionStart hook (`.claude/settings.json`) から呼ばれる 1-line JSON。
+失敗時も hook を止めない設計で、すべてのフィールドは必ず存在する。
+
+| フィールド | 型 | 内容 |
+|---|---|---|
+| `version` | string | 現在の `box/regulation.json` の `version` (例: `"champions"`)。未設定時 `"champions"` |
+| `regulation` | string | 現在の `box/regulation.json` の `regulation` (例: `"M-A"`)。未設定時 `"M-A"` |
+| `pkdx_version` | string | バイナリ build 時に焼き込まれた `version.mbt` の値 |
+| `repo_pkdx_version` | string | `pkdx/moon.mod.json` の `version` を実行時に読んだ値。読めない場合は `""` |
+| `version_drift` | bool | `repo_pkdx_version != ""` かつ `repo_pkdx_version != pkdx_version` のとき `true`。`""` 比較は意図的に false 側 (silent) |
+| `version_drift_message` | string | `version_drift=true` のときのみ再ビルド指示文。それ以外は `""` |
+| `items_count` | int | champions.db 内の item 行数。読めない場合 `0` |
+| `champions_pokemon_count` | int | champions.db 内の pokemon 行数。読めない場合 `0` |
+
+`PKDX_REPO_MOON_MOD` 環境変数で `pkdx/moon.mod.json` のパスを上書き可 (テスト用)。
 
 ## Reference documents
 
