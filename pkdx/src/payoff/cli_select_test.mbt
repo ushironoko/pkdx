@@ -68,10 +68,10 @@ test "select_6v6_single_outputs_3pick_distribution" {
   let j = @json.parse(out)
   match j {
     Object(m) => {
-      // C(6, 3) = 20 selections on each side.
+      // 6 × C(5, 2) = 60 selections on each side (lead-aware enumeration).
       match m.get("row_strategy") {
         Some(Array(arr)) => {
-          assert_true(arr.length() == 20)
+          assert_true(arr.length() == 60)
           let mut total = 0.0
           for x in arr {
             match x {
@@ -84,7 +84,7 @@ test "select_6v6_single_outputs_3pick_distribution" {
         _ => assert_true(false)
       }
       match m.get("col_strategy") {
-        Some(Array(arr)) => assert_true(arr.length() == 20)
+        Some(Array(arr)) => assert_true(arr.length() == 60)
         _ => assert_true(false)
       }
     }
@@ -203,7 +203,7 @@ test "select_markdown_report_written_to_box_teams" {
   let md = render_select_markdown(r)
   assert_true(md.contains("# Selection Report"))
   assert_true(md.contains("- format: single"))
-  assert_true(md.contains("| probability | members |"))
+  assert_true(md.contains("| probability | lead | bench |"))
 }
 
 ///|
@@ -320,12 +320,13 @@ test "parse_move_json_3elem_stat_effects_and_posthit_fields" {
 ///|
 /// Phase 14: ScreenedSwitchingGame(1) returns a SelectResult whose `selections`
 /// / `selection_names` / `row_strategy` are filtered down to retained rows
-/// only. `C(4, 3) = 4` selections on each side × `keep_top = 0.5` → 2 rows
-/// / 2 cols retained.
+/// only. `6 × C(5, 2) = 60` selections on each side × `keep_top = 0.5` →
+/// `ceil(60 × 0.5) = 30` rows / 30 cols retained. CLI 境界の
+/// `REQUIRED_TEAM_SIZE = 6` 制約に合わせて 6v6 入力で評価する。
 test "run_select_with_screened_switching_game_returns_retained_shape" {
   let input = select_input_json_with_extra(
-    [100, 100, 100, 100],
-    [100, 100, 100, 100],
+    [100, 100, 100, 100, 100, 100],
+    [100, 100, 100, 100, 100, 100],
     "single",
     ",\"team_payoff_model\":\"screened_switching_game:10:42:0.5:1\"",
   )
@@ -359,9 +360,9 @@ test "run_select_with_screened_switching_game_returns_retained_shape" {
       return
     }
   }
-  // 4 selections × keep_top=0.5 → ceil(4 * 0.5) = 2 retained on each axis.
-  assert_eq(selections.length(), 2)
-  assert_eq(opp_selections.length(), 2)
+  // 60 selections × keep_top=0.5 → ceil(60 * 0.5) = 30 retained on each axis.
+  assert_eq(selections.length(), 30)
+  assert_eq(opp_selections.length(), 30)
   // row_strategy must track retained selection shape.
   assert_eq(row_strategy.length(), selections.length())
 }
@@ -384,6 +385,47 @@ test "run_select_rejects_screened_switching_game_with_double_format" {
 }
 
 ///|
+/// CLI 境界 `compute_select_with_team_model` は `REQUIRED_TEAM_SIZE = 6` を
+/// 厳密に要求する。6 体未満 / 7 体以上の team は `InvalidJson` で弾かれる。
+/// これにより lead-aware 列挙の計算量 `(n × C(n−1, 2))²` が想定外の n で
+/// 爆発するのを CLI 入口で阻止する。エラーメッセージにサイズが含まれることで
+/// JSON 入力ミスを利用者がすぐ特定できる。
+test "run_select_rejects_team_size_other_than_six" {
+  // n=5 → 5 × C(4, 2) = 50 だが REQUIRED_TEAM_SIZE 違反で弾かれる。
+  let undersized = select_input_json_with_extra(
+    [100, 100, 100, 100, 100],
+    [100, 100, 100, 100, 100, 100],
+    "single",
+    ",\"team_payoff_model\":\"switching_game:1\"",
+  )
+  let undersized_msg = try {
+    let _ = run_select(undersized)
+    ""
+  } catch {
+    InvalidJson(msg) => msg
+    e => e.to_string()
+  }
+  assert_true(undersized_msg.contains("exactly 6"))
+  assert_true(undersized_msg.contains("team=5"))
+  // n=7 → 7 × C(6, 2) = 105 で行列が 105×60 になる前に弾く。
+  let oversized = select_input_json_with_extra(
+    [100, 100, 100, 100, 100, 100],
+    [100, 100, 100, 100, 100, 100, 100],
+    "single",
+    ",\"team_payoff_model\":\"switching_game:1\"",
+  )
+  let oversized_msg = try {
+    let _ = run_select(oversized)
+    ""
+  } catch {
+    InvalidJson(msg) => msg
+    e => e.to_string()
+  }
+  assert_true(oversized_msg.contains("exactly 6"))
+  assert_true(oversized_msg.contains("opponent=7"))
+}
+
+///|
 test "select_accepts_team_builder_member_format" {
   let mk = fn(name : String, speed : Int) -> String {
     "{\"name\":\"" + name + "\",\"types\":[\"ノーマル\"],\"base_stats\":{\"h\":100,\"a\":100,\"b\":80,\"c\":80,\"d\":80,\"s\":" + speed.to_string() + "},\"ability\":\"\",\"item\":\"\",\"role\":\"軸\",\"moves\":[{\"name\":\"のしかかり\",\"type\":\"ノーマル\",\"category\":\"物理\",\"power\":85}]}"
@@ -395,7 +437,7 @@ test "select_accepts_team_builder_member_format" {
   match j {
     Object(m) => {
       match m.get("row_strategy") {
-        Some(Array(arr)) => assert_true(arr.length() == 20)
+        Some(Array(arr)) => assert_true(arr.length() == 60)
         _ => assert_true(false)
       }
     }

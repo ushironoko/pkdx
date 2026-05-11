@@ -177,52 +177,39 @@ pub(all) enum StatModel {
 }
 
 ///|
-pub fn StatModel::step(self : StatModel) -> Int {
-  match self {
-    Standard(_) => 4
-    Champions => 1
-  }
+/// Bundle of model-dependent scalar limits. Returned in one struct allocation
+/// so call sites that read multiple values inside a loop can hoist
+/// `let limits = model.limits()` outside the loop.
+pub(all) struct StatLimits {
+  step : Int
+  max_per_stat : Int
+  sentinel : Int
+  step_cap : Int
+  hbd_budget : Int
+  full_budget : Int
 }
 
 ///|
-pub fn StatModel::max_per_stat(self : StatModel) -> Int {
+pub fn StatModel::limits(self : StatModel) -> StatLimits {
   match self {
-    Standard(_) => 252
-    Champions => 32
-  }
-}
-
-///|
-pub fn StatModel::sentinel(self : StatModel) -> Int {
-  match self {
-    Standard(_) => 256
-    Champions => 33
-  }
-}
-
-///|
-pub fn StatModel::step_cap(self : StatModel) -> Int {
-  match self {
-    Standard(_) => 600
-    Champions => 200
-  }
-}
-
-///|
-/// Budget used by HBD optimizers (sum of HP+B+D+fixed non-HBD must stay ≤).
-pub fn StatModel::hbd_budget(self : StatModel) -> Int {
-  match self {
-    Standard(_) => 508
-    Champions => 66
-  }
-}
-
-///|
-/// Budget used by reverse-spread (total of all 6 points must stay ≤).
-pub fn StatModel::full_budget(self : StatModel) -> Int {
-  match self {
-    Standard(_) => 510
-    Champions => 66
+    Standard(_) =>
+      StatLimits::{
+        step: 4,
+        max_per_stat: 252,
+        sentinel: 256,
+        step_cap: 600,
+        hbd_budget: 508,
+        full_budget: 510,
+      }
+    Champions =>
+      StatLimits::{
+        step: 1,
+        max_per_stat: 32,
+        sentinel: 33,
+        step_cap: 200,
+        hbd_budget: 66,
+        full_budget: 66,
+      }
   }
 }
 
@@ -287,6 +274,35 @@ pub fn StatModel::point_for_other(
 // ──────────────────────────────────────────────
 
 ///|
+/// Module-level const so each Standard wrapper invocation does not re-allocate
+/// the IV array. All 4 wrappers assume uniform IV=31, so a single shared value
+/// is safe.
+let standard_iv31 : FixedArray[Int] = FixedArray::make(6, 31)
+
+///|
+/// Shared dispatcher behind calc_stat / calc_def_stat / calc_stat_champions /
+/// calc_def_stat_champions. `pt` is EV (Standard) or SP (Champions). Non-HP
+/// uses stat_idx=1 because all 4 wrappers feed uniform IV (Standard) or
+/// stat_idx-agnostic SP (Champions).
+fn calc_stat_with(
+  model : StatModel,
+  base : Int,
+  is_hp : Bool,
+  pt : Int,
+  nature_num : Int,
+  nature_den : Int,
+  custom : Int,
+) -> Int {
+  if custom > 0 {
+    return custom
+  }
+  if is_hp {
+    return model.calc_hp(base, pt)
+  }
+  model.calc_other(1, base, pt, nature_num, nature_den)
+}
+
+///|
 /// Lv50 stat shortcut (IV31, EV252).
 /// `nature_num` / `nature_den` で性格補正を指定 (default +10% = 11/10)。
 pub fn calc_stat(
@@ -296,13 +312,15 @@ pub fn calc_stat(
   nature_den? : Int = 10,
   custom? : Int = 0,
 ) -> Int {
-  if custom > 0 {
-    return custom
-  }
-  if is_hp {
-    return calc_hp_full(base, 31, 252)
-  }
-  calc_other_full(base, 31, 252, nature_num, nature_den)
+  calc_stat_with(
+    Standard(ivs=standard_iv31),
+    base,
+    is_hp,
+    252,
+    nature_num,
+    nature_den,
+    custom,
+  )
 }
 
 ///|
@@ -315,13 +333,7 @@ pub fn calc_stat_champions(
   nature_den? : Int = 10,
   custom? : Int = 0,
 ) -> Int {
-  if custom > 0 {
-    return custom
-  }
-  if is_hp {
-    return calc_hp_champions(base, 32)
-  }
-  calc_other_champions(base, 32, nature_num, nature_den)
+  calc_stat_with(Champions, base, is_hp, 32, nature_num, nature_den, custom)
 }
 
 ///|
@@ -335,13 +347,15 @@ pub fn calc_def_stat(
   nature_den? : Int = 1,
   custom? : Int = 0,
 ) -> Int {
-  if custom > 0 {
-    return custom
-  }
-  if is_hp {
-    return calc_hp_full(base, 31, 0)
-  }
-  calc_other_full(base, 31, 0, nature_num, nature_den)
+  calc_stat_with(
+    Standard(ivs=standard_iv31),
+    base,
+    is_hp,
+    0,
+    nature_num,
+    nature_den,
+    custom,
+  )
 }
 
 ///|
@@ -354,13 +368,7 @@ pub fn calc_def_stat_champions(
   nature_den? : Int = 1,
   custom? : Int = 0,
 ) -> Int {
-  if custom > 0 {
-    return custom
-  }
-  if is_hp {
-    return calc_hp_champions(base, 0)
-  }
-  calc_other_champions(base, 0, nature_num, nature_den)
+  calc_stat_with(Champions, base, is_hp, 0, nature_num, nature_den, custom)
 }
 
 ///|
@@ -508,9 +516,10 @@ pub fn reverse_spread_with_model(
   ]
   let natures = @model.all_natures()
   let results : Array[(@model.Nature, FixedArray[Int])] = []
-  let step = model.step()
-  let max_per = model.max_per_stat()
-  let budget = model.full_budget()
+  let limits = model.limits()
+  let step = limits.step
+  let max_per = limits.max_per_stat
+  let budget = limits.full_budget
   for ni = 0; ni < natures.length(); ni = ni + 1 {
     let nature = natures[ni]
     let points : FixedArray[Int] = FixedArray::make(6, -1)

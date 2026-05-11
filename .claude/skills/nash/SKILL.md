@@ -24,7 +24,7 @@ PKDX=$REPO_ROOT/bin/pkdx
 | exploitability | 現在の戦略 σ に対する最良応答で得られる追加利得。零和で 0 なら σ は Nash 均衡 |
 | support | 確率 > 0 の純戦略 index 集合 |
 | TeamPayoffModel | 利得の作り方 (`switching_game` / `screened_switching_game:<trials>:<seed>:<keep_top>`)。turn_limit 既定は MC=5 / DP=5 (`switching_game:<N>` で個別上書き可) |
-| BattleFormat | `single` = 3 体選出 (20x20) のみ対応 (`double` は現状未サポート) |
+| BattleFormat | `single` = lead-aware 3 体選出 (60x60、`6 × C(5,2) = 60` 通りで先頭 (lead) を含む順序付きタプル) のみ対応 (`double` は現状未サポート) |
 
 詳細はまず `references/` を参照:
 - `references/theory.md` — 零和 LP / Simplex / Fictitious play / MWU の数式と根拠
@@ -212,7 +212,7 @@ JSON
   "format": "single",
   "value": 0.0,
   "exploitability": 0.0,
-  "selections": [[0,1,2], [0,1,3], ...],
+  "selections": [[0,1,2], [0,1,3], ..., [1,0,2], ...],
   "selection_names": [["P0","P1","P2"], ...],
   "opp_selections": [...],
   "opp_selection_names": [...],
@@ -221,9 +221,11 @@ JSON
 }
 ```
 
+各 selection は `[lead, b1, b2]` の **順序付きタプル**で、**位置 0 が先頭選出 (lead)**、後ろ 2 体は控え (昇順)。シングル 6v6 では `6 × C(5,2) = 60` 通り列挙されるので `row_strategy` / `col_strategy` も長さ 60。同じメンバー集合でも先頭が違えば別エントリ扱いになる点に注意 (例: `[0,1,2]` と `[1,0,2]` は別物)。
+
 ### 結果整形
 
-確率 > 1% の選出のみ表示:
+確率 > 1% の選出のみ表示。先頭の Pokémon は **太字**で強調する:
 
 ```markdown
 ## 選出分布 ({format})
@@ -232,9 +234,9 @@ JSON
 - **exploitability**: {exploitability:.6f}
 
 ### 採用すべき選出
-| 確率 | 選出メンバー |
+| 確率 | 先頭 → 控え |
 |---|---|
-| {p:.1%} | {names} |
+| {p:.1%} | **{names[0]}** → {names[1]}, {names[2]} |
 ...
 
 ### 相手の最適選出

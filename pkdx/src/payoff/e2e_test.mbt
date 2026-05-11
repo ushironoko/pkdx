@@ -37,13 +37,13 @@ test "end_to_end_select_with_switching_game_model_returns_valid_distribution" {
   let team_m = team_payoff_matrix_with_team_model(
     team, opp, Single, SwitchingGame(1),
   )
-  assert_true(team_m.rows() == 20 && team_m.cols() == 20)
+  assert_true(team_m.rows() == 60 && team_m.cols() == 60)
   let lp = @nash.solve_zero_sum(team_m)
   match lp {
     Optimal(row_strategy~, value~, ..) => {
       assert_true(value.is_nan() == false)
       let arr = row_strategy.to_array()
-      assert_true(arr.length() == 20)
+      assert_true(arr.length() == 60)
       let mut total = 0.0
       for x in arr {
         total += x
@@ -119,6 +119,47 @@ test "end_to_end_amaeru_worth_more_vs_physical_than_vs_special_opp" {
   // user's DP value should be strictly better (or at least not worse) vs the
   // physical opponent.
   assert_true(v_vs_phys >= v_vs_spec - 1.0e-9)
+}
+
+///|
+/// Behavioral pin for the lead-aware enumeration: same backup set with the
+/// lead permuted between T0 and T1 must yield different switching-game DP
+/// values. Combined with the structural pins on `combinations_with_lead`
+/// in `team_payoff_test.mbt`, this guards against regressing the matrix
+/// builder back to order-free `combinations` — the matrix path eventually
+/// calls `switching_game_winrate(pick_combatants(team, sel), …)`, so a
+/// direct two-call comparison exercises the same DP that
+/// `team_payoff_matrix_switching` would invoke for rows `[0,1,2]` and
+/// `[1,0,2]`, without paying for the full 12×12 enumeration.
+test "end_to_end_lead_aware_switching_game_value_changes_with_lead" {
+  let mv = mk_move("のしかかり", "ノーマル", @model.Physical, 85)
+  // T0 = fast / frail glass cannon, T1 = slow / bulky tank, T2 = average.
+  // switching_game_winrate uses active=0 on each side, so reordering the
+  // input array directly mirrors permuting the lead column emitted by
+  // combinations_with_lead.
+  let t0 = mk_combatant(
+    mk_pokemon("T0", "ノーマル", "", 110, 70, 60, 70, 60, 200), [mv],
+  )
+  let t1 = mk_combatant(
+    mk_pokemon("T1", "ノーマル", "", 200, 160, 140, 70, 140, 50), [mv],
+  )
+  let t2 = mk_combatant(
+    mk_pokemon("T2", "ノーマル", "", 130, 100, 100, 80, 100, 100), [mv],
+  )
+  let opp = [
+    mk_combatant(
+      mk_pokemon("O0", "ノーマル", "", 140, 110, 100, 80, 100, 110), [mv],
+    ),
+    mk_combatant(
+      mk_pokemon("O1", "ノーマル", "", 140, 110, 100, 80, 100, 110), [mv],
+    ),
+    mk_combatant(
+      mk_pokemon("O2", "ノーマル", "", 140, 110, 100, 80, 100, 110), [mv],
+    ),
+  ]
+  let v_t0_lead = switching_game_winrate([t0, t1, t2], opp, 4)
+  let v_t1_lead = switching_game_winrate([t1, t0, t2], opp, 4)
+  assert_true((v_t0_lead - v_t1_lead).abs() > 1.0e-9)
 }
 
 ///|

@@ -32,12 +32,19 @@
 ///   "format": String,
 ///   "value":  Double,
 ///   "exploitability": Double,
-///   "selections": [
-///     {"indices": [Int], "names": [String], "probability": Double}, ...
-///   ],
-///   "opponent_selections": [...]
+///   "selections":      [[Int, Int, Int], ...],   // [lead, b1, b2]
+///   "selection_names": [[String, String, String], ...],
+///   "opp_selections":  [[Int, Int, Int], ...],
+///   "opp_selection_names": [[String, String, String], ...],
+///   "row_strategy":    [Double, ...],
+///   "col_strategy":    [Double, ...]
 /// }
 /// ```
+///
+/// Each selection is an ordered tuple `[lead, b1, b2]` where index 0 is the
+/// 先頭 (lead) Pokémon and the remaining slots are the bench (sorted
+/// ascending). For singles this enumerates `6 × C(5, 2) = 60` selections per
+/// side; for doubles the model is currently unsupported (Single only).
 
 ///|
 fn parse_move_json(j : Json, ctx : String) -> @model.Move raise NashCliError {
@@ -394,13 +401,11 @@ fn parse_nature_field(
 }
 
 ///|
-/// `stat_points`: `{h,a,b,c,d,s}` 形式の 6 要素 SP (Champions) / EV (Standard)。
-/// post-mega 実数値の再計算に使う「振り」そのもので、`actual_stats` と違い
-/// engine override には直接渡らない。スキーマ的には `actual_stats` と同じ
-/// short key 形式のみ受け付ける。欠損・部分欠損は `None` (= 再計算不可、
-/// post-mega は engine 既定投資にフォールバック)。
-fn parse_stat_points_field(m : Map[String, Json]) -> Array[Int]? {
-  match m.get("stat_points") {
+fn parse_short_key_stats(
+  m : Map[String, Json],
+  field_name : String,
+) -> Array[Int]? {
+  match m.get(field_name) {
     Some(Object(st)) => {
       let keys = ["h", "a", "b", "c", "d", "s"]
       let out : Array[Int] = Array::make(6, 0)
@@ -414,6 +419,16 @@ fn parse_stat_points_field(m : Map[String, Json]) -> Array[Int]? {
     }
     _ => None
   }
+}
+
+///|
+/// `stat_points`: `{h,a,b,c,d,s}` 形式の 6 要素 SP (Champions) / EV (Standard)。
+/// post-mega 実数値の再計算に使う「振り」そのもので、`actual_stats` と違い
+/// engine override には直接渡らない。スキーマ的には `actual_stats` と同じ
+/// short key 形式のみ受け付ける。欠損・部分欠損は `None` (= 再計算不可、
+/// post-mega は engine 既定投資にフォールバック)。
+fn parse_stat_points_field(m : Map[String, Json]) -> Array[Int]? {
+  parse_short_key_stats(m, "stat_points")
 }
 
 ///|
@@ -423,20 +438,7 @@ fn parse_stat_points_field(m : Map[String, Json]) -> Array[Int]? {
 /// `None` にフォールバックする (厳密にして skill 側のバグを隠したくないが、
 /// 既存の base_stats だけで動いていたケースの後方互換を取るため optional)。
 fn parse_actual_stats_field(m : Map[String, Json]) -> Array[Int]? {
-  match m.get("actual_stats") {
-    Some(Object(st)) => {
-      let keys = ["h", "a", "b", "c", "d", "s"]
-      let out : Array[Int] = Array::make(6, 0)
-      for i in 0..<6 {
-        match st.get(keys[i]) {
-          Some(Number(n, ..)) => out[i] = n.to_int()
-          _ => return None
-        }
-      }
-      Some(out)
-    }
-    _ => None
-  }
+  parse_short_key_stats(m, "actual_stats")
 }
 
 ///|
@@ -446,20 +448,7 @@ fn parse_actual_stats_field(m : Map[String, Json]) -> Array[Int]? {
 /// 構築のみに emit する運用)。キー欠損・部分欠損は `None` フォールバックで、
 /// recompute_actual_stats_for_mega 側で 31 揃い (完璧個体) を仮定する。
 fn parse_ivs_field(m : Map[String, Json]) -> Array[Int]? {
-  match m.get("ivs") {
-    Some(Object(st)) => {
-      let keys = ["h", "a", "b", "c", "d", "s"]
-      let out : Array[Int] = Array::make(6, 0)
-      for i in 0..<6 {
-        match st.get(keys[i]) {
-          Some(Number(n, ..)) => out[i] = n.to_int()
-          _ => return None
-        }
-      }
-      Some(out)
-    }
-    _ => None
-  }
+  parse_short_key_stats(m, "ivs")
 }
 
 ///|
@@ -696,6 +685,14 @@ fn selection_names(
 }
 
 ///|
+/// `pkdx select` の CLI 境界で許容するチームサイズ。ポケモン本編のパーティ
+/// 上限と一致 (6 体)。lead-aware 列挙は `(n × C(n−1, k−1))²` セルなので、
+/// ここを緩めると oversized JSON 1 件で行列が爆発する。低レベル
+/// `team_payoff_matrix_*` (k ≦ n のみ要求) は単体テストから直接叩かれる
+/// ため、サイズ制限は本関数 (= ユーザー入力の最初の関門) でのみ強制する。
+pub const REQUIRED_TEAM_SIZE : Int = 6
+
+///|
 /// Compute the selection-level Nash distribution for `team` vs `opponent`
 /// under a full `TeamPayoffModel` (Phase 13 entry point).
 pub fn compute_select_with_team_model(
@@ -705,13 +702,15 @@ pub fn compute_select_with_team_model(
   team_model : TeamPayoffModel,
   disk~ : @damage_cache.DamageDiskCache? = None,
 ) -> SelectResult raise NashCliError {
-  let k = match format {
-    Single => 3
-    Double => 4
-  }
-  if team.length() < k || opponent.length() < k {
+  if team.length() != REQUIRED_TEAM_SIZE || opponent.length() != REQUIRED_TEAM_SIZE {
     raise InvalidJson(
-      "team and opponent must each have at least " + k.to_string() + " members",
+      "team and opponent must each have exactly " +
+      REQUIRED_TEAM_SIZE.to_string() +
+      " members (got team=" +
+      team.length().to_string() +
+      ", opponent=" +
+      opponent.length().to_string() +
+      ")",
     )
   }
   let (matrix, retained_rows, retained_cols) = match team_model {
@@ -741,9 +740,10 @@ pub fn compute_select_with_team_model(
 ///|
 /// Build a `SelectResult` from the payoff matrix by solving the zero-sum
 /// Nash equilibrium. When `retained_rows` / `retained_cols` are `Some`, the
-/// matrix rows / columns index into `combinations(|team|, k)` via the given
-/// index arrays (used by the screened pipeline). When both are `None`, the
-/// full Cartesian enumeration is used (plain `SwitchingGame` path).
+/// matrix rows / columns index into `combinations_with_lead(|team|, k)` via
+/// the given index arrays (used by the screened pipeline). When both are
+/// `None`, the full lead-first enumeration is used (plain `SwitchingGame`
+/// path).
 fn build_select_result(
   format : BattleFormat,
   team : Array[Combatant],
@@ -770,8 +770,8 @@ fn build_select_result(
       @nash.exploitability(matrix, row_strategy, col_strategy)
     _ => 0.0
   }
-  let all_team = combinations(team.length(), k)
-  let all_opp = combinations(opponent.length(), k)
+  let all_team = combinations_with_lead(team.length(), k)
+  let all_opp = combinations_with_lead(opponent.length(), k)
   let team_indices = match retained_rows {
     Some(idx) => idx
     None => {
@@ -924,15 +924,17 @@ pub fn render_select_markdown(r : SelectResult) -> String {
   s = s + "- value: " + r.value.to_string() + "\n"
   s = s + "- exploitability: " + r.exploitability.to_string() + "\n\n"
   s = s + "## Row-player selection distribution\n\n"
-  s = s + "| probability | members |\n| --- | --- |\n"
+  s = s + "| probability | lead | bench |\n| --- | --- | --- |\n"
   for i in 0..<r.selections.length() {
     if r.row_strategy[i] > 1.0e-6 {
-      s = s + "| " + r.row_strategy[i].to_string() + " | "
-      for j in 0..<r.selection_names[i].length() {
-        if j > 0 {
+      let names = r.selection_names[i]
+      let lead = if names.length() > 0 { names[0] } else { "" }
+      s = s + "| " + r.row_strategy[i].to_string() + " | " + lead + " | "
+      for j in 1..<names.length() {
+        if j > 1 {
           s = s + ", "
         }
-        s = s + r.selection_names[i][j]
+        s = s + names[j]
       }
       s = s + " |\n"
     }
