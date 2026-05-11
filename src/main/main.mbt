@@ -2907,12 +2907,184 @@ fn cmd_select() -> @admiral.CommandDef {
   @admiral.command(
     name="select",
     description="Compute Nash-optimal selection distribution from team JSON on stdin",
-    run=Some(fn(_ctx) { run_select_cmd() }),
+    options=[
+      @admiral.string(
+        "progress",
+        description="Live progress sink: off | stderr | json (JSON Lines to stderr)",
+        default=Some("off"),
+      ),
+      @admiral.int(
+        "progress-every",
+        description="Emit a DP-node checkpoint every N cache misses (only with --progress)",
+        default=Some(50000),
+      ),
+    ],
+    run=Some(fn(ctx) { run_select_cmd(ctx) }),
   )
 }
 
 ///|
-fn run_select_cmd() -> Unit {
+/// Render an `Array[Int]` as `[0,1,2]`-style for stderr / JSON output.
+fn format_int_array(arr : Array[Int]) -> String {
+  let mut s = "["
+  for i in 0..<arr.length() {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + arr[i].to_string()
+  }
+  s + "]"
+}
+
+///|
+/// Render a `ProgressEvent` as a single human-readable line for stderr.
+fn format_progress_stderr(event : @payoff.ProgressEvent) -> String {
+  match event {
+    PhaseStart(name, total) =>
+      "[progress] phase=" + name + " start total=" + total.to_string()
+    PhaseProgress(name, current, total) =>
+      "[progress] phase=" +
+      name +
+      " " +
+      current.to_string() +
+      "/" +
+      total.to_string()
+    PhaseEnd(name) => "[progress] phase=" + name + " end"
+    CellStart(team_sel, opp_sel, row, col) =>
+      "[progress] cell row=" +
+      row.to_string() +
+      " col=" +
+      col.to_string() +
+      " team=" +
+      format_int_array(team_sel) +
+      " opp=" +
+      format_int_array(opp_sel)
+    DpNode(visited, hits, depth, rows, cols, outcomes, classification) =>
+      "[progress] dp visited=" +
+      visited.to_string() +
+      " hits=" +
+      hits.to_string() +
+      " depth=" +
+      depth.to_string() +
+      " matrix=" +
+      rows.to_string() +
+      "x" +
+      cols.to_string() +
+      " outcomes=" +
+      outcomes.to_string() +
+      " kind=" +
+      classification
+  }
+}
+
+///|
+/// Escape a string for safe embedding inside a JSON string literal. Today the
+/// progress event string fields (phase name / classification) are controlled
+/// constants, but the helper exists so callers do not need to think about it
+/// when new string fields show up — see `format_progress_json`.
+fn json_escape_string(s : String) -> String {
+  let mut out = ""
+  for ch in s {
+    let code = ch.to_int()
+    if ch == '"' {
+      out = out + "\\\""
+    } else if ch == '\\' {
+      out = out + "\\\\"
+    } else if ch == '\n' {
+      out = out + "\\n"
+    } else if ch == '\r' {
+      out = out + "\\r"
+    } else if ch == '\t' {
+      out = out + "\\t"
+    } else if ch == '\u{08}' {
+      out = out + "\\b"
+    } else if ch == '\u{0C}' {
+      out = out + "\\f"
+    } else if code < 0x20 {
+      let hex = "0123456789abcdef"
+      let hi = (code >> 4) & 0xF
+      let lo = code & 0xF
+      out = out + "\\u00" + hex[hi:hi + 1].to_string() + hex[lo:lo + 1].to_string()
+    } else {
+      out = out + ch.to_string()
+    }
+  }
+  out
+}
+
+///|
+/// Render a `ProgressEvent` as a single JSON object (one line per event,
+/// suitable for JSON Lines / `jq -c` consumers). The `cell_start` payload
+/// uses `team_indices` / `opp_indices` for the row/column selection arrays —
+/// this is the documented public schema for consumers (e.g. the grid
+/// visualiser script and downstream agents).
+fn format_progress_json(event : @payoff.ProgressEvent) -> String {
+  match event {
+    PhaseStart(name, total) =>
+      "{\"event\":\"phase_start\",\"phase\":\"" +
+      json_escape_string(name) +
+      "\",\"total\":" +
+      total.to_string() +
+      "}"
+    PhaseProgress(name, current, total) =>
+      "{\"event\":\"phase_progress\",\"phase\":\"" +
+      json_escape_string(name) +
+      "\",\"current\":" +
+      current.to_string() +
+      ",\"total\":" +
+      total.to_string() +
+      "}"
+    PhaseEnd(name) =>
+      "{\"event\":\"phase_end\",\"phase\":\"" + json_escape_string(name) + "\"}"
+    CellStart(team_sel, opp_sel, row, col) =>
+      "{\"event\":\"cell_start\",\"row\":" +
+      row.to_string() +
+      ",\"col\":" +
+      col.to_string() +
+      ",\"team_indices\":" +
+      format_int_array(team_sel) +
+      ",\"opp_indices\":" +
+      format_int_array(opp_sel) +
+      "}"
+    DpNode(visited, hits, depth, rows, cols, outcomes, classification) =>
+      "{\"event\":\"dp_node\",\"visited\":" +
+      visited.to_string() +
+      ",\"hits\":" +
+      hits.to_string() +
+      ",\"depth\":" +
+      depth.to_string() +
+      ",\"rows\":" +
+      rows.to_string() +
+      ",\"cols\":" +
+      cols.to_string() +
+      ",\"outcomes\":" +
+      outcomes.to_string() +
+      ",\"classification\":\"" +
+      json_escape_string(classification) +
+      "\"}"
+  }
+}
+
+///|
+fn run_select_cmd(ctx : @admiral.Context) -> Unit {
+  let mode = ctx_str(ctx, "progress")
+  let log_every = ctx_int(ctx, "progress-every")
+  let (progress, dp_log_every) : ((@payoff.ProgressEvent) -> Unit, Int) = match mode {
+    "off" => (fn(_e) { () }, 0)
+    "stderr" =>
+      (
+        fn(e) {
+          pkdx_eprintln(@db.to_c_bytes(format_progress_stderr(e)))
+        },
+        log_every,
+      )
+    "json" =>
+      (fn(e) { pkdx_eprintln(@db.to_c_bytes(format_progress_json(e))) }, log_every)
+    _ => {
+      exit_error("unknown --progress mode: " + mode + " (expected off|stderr|json)")
+      return
+    }
+  }
   let raw = read_stdin_json()
   // Open the L2 damage cache once so the SwitchingGame DP inside
   // `run_select` can reuse 16-roll results from previous nash sessions.
@@ -2929,7 +3101,7 @@ fn run_select_cmd() -> Unit {
       None
     }
   }
-  let out = try @payoff.run_select(raw, disk~) catch {
+  let out = try @payoff.run_select(raw, disk~, progress~, dp_log_every~) catch {
     err => {
       match disk {
         Some(c) => @damage_cache.close(c)
