@@ -15,7 +15,7 @@ test "migrations() is the concatenation of pokedex + champions" {
   }
   inspect(
     names,
-    content="[\"001_mega_legendsza\", \"002_move_meta\", \"003_mega_forms\", \"004_move_meta_ailment\", \"005_move_meta_posthit\", \"006_form_name_aliases\", \"007_gender_symbol_aliases\", \"008_champions_init_schema\", \"009_champions_pokemon\", \"010_champions_moves\", \"011_champions_learnset\", \"012_champions_items\", \"013_champions_form_aliases\"]",
+    content="[001_mega_legendsza, 002_move_meta, 003_mega_forms, 004_move_meta_ailment, 005_move_meta_posthit, 006_form_name_aliases, 007_gender_symbol_aliases, 008_champions_init_schema, 009_champions_pokemon, 010_champions_moves, 011_champions_learnset, 012_champions_items, 013_champions_form_aliases]",
   )
 }
 

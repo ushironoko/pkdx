@@ -41,7 +41,7 @@ test "idempotency: identical_cache_returns_skip" {
   let result = check_pokemon_import(cache, existing)
   inspect(
     result,
-    content="Skip(\"box/pokemons/マンムー/スカーフ型.meta.json\")",
+    content="Skip(box/pokemons/マンムー/スカーフ型.meta.json)",
   )
 }
 
@@ -60,7 +60,7 @@ test "idempotency: differs_only_in_item_returns_diff" {
   match result {
     Diff(path, fields) => {
       inspect(path, content="box/pokemons/マンムー/いのちのたま型.meta.json")
-      inspect(fields, content="[\"item\"]")
+      inspect(fields, content="[item]")
     }
     _ => fail("Expected Diff, got \{result}")
   }
@@ -95,7 +95,7 @@ test "idempotency: move_order_difference_is_normalized" {
   // sort 後は一致 → Skip
   inspect(
     result,
-    content="Skip(\"box/pokemons/マンムー/スカーフ型.meta.json\")",
+    content="Skip(box/pokemons/マンムー/スカーフ型.meta.json)",
   )
 }
 
