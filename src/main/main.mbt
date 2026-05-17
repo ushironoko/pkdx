@@ -16,7 +16,7 @@ fn main {
     app.run(argv=Some(argv))
   } catch {
     err => {
-      pkdx_eprintln(@db.to_c_bytes("Error: " + err.to_string()))
+      pkdx_eprintln(@db.to_c_bytes("Error: " + @debug.to_string(err)))
       pkdx_exit(1)
     }
   }
@@ -338,12 +338,12 @@ fn cmd_context() -> @admiral.CommandDef {
 struct BoxRegulation {
   version : String
   regulation : String
-} derive(Show)
+} derive(Debug)
 
 ///|
 fn read_box_regulation_or_default() -> BoxRegulation {
   let path = box_regulation_path()
-  if not(@db.file_exists(path)) {
+  if !(@db.file_exists(path)) {
     return { version: "champions", regulation: "M-A" }
   }
   let raw = match @db.read_file(path) {
@@ -404,7 +404,7 @@ fn read_repo_pkdx_version() -> String {
     Some(p) => p
     None => "moon.mod.json"
   }
-  if not(@db.file_exists(path)) {
+  if !(@db.file_exists(path)) {
     return ""
   }
   let raw = match @db.read_file(path) {
@@ -432,7 +432,7 @@ fn count_champions_assets() -> (Int, Int) {
     Err(_) => return (0, 0)
   }
   let champions_path = resolve_champions_db_path_from(pokedex_path)
-  if not(@db.file_exists(champions_path)) {
+  if !(@db.file_exists(champions_path)) {
     return (0, 0)
   }
   let db = match @db.open_for(pokedex_path, "champions") {
@@ -863,7 +863,7 @@ fn run_db_init(champout_dir : String, out_dir : String) -> Unit {
     Ok(v) => v
   }
   // valid_ids: pokemon_mapper の出力 id 集合 (= is_valid='1' で絞った後)
-  let valid_ids : Map[String, Bool] = Map::new()
+  let valid_ids : Map[String, Bool] = Map([])
   for i = 0; i < pokemons.length(); i = i + 1 {
     valid_ids[pokemons[i].id] = true
   }
@@ -1012,7 +1012,7 @@ fn run_convert_meta(in_path : String, out_path : String, in_place : Bool) -> Uni
     // Preserve the original content once (.bak 上書き防止) so the migration
     // is reversible for the user; subsequent runs become no-ops.
     let bak_path = in_path + ".bak"
-    if not(@db.file_exists(bak_path)) {
+    if !(@db.file_exists(bak_path)) {
       let rc_bak = pkdx_write_file(
         @db.to_c_bytes(bak_path),
         @db.to_c_bytes(raw),
@@ -1077,7 +1077,7 @@ fn run_migrate(repo_root : String) -> Unit {
   // Ensure champions.db exists — the runner refuses to open a missing
   // file. Bootstrap it lazily so first-time installs and existing
   // installs that pre-date the platform refactor both succeed.
-  if not(@db.file_exists(champions_path)) {
+  if !(@db.file_exists(champions_path)) {
     match @db.open_champions_rwc(champions_path) {
       Err(e) => {
         exit_error("failed to create champions.db at " + champions_path + ": " + e)
@@ -1648,7 +1648,7 @@ fn[T] with_db(f : (@db.Db) -> T, version~ : String = "") -> T {
   // 経路では呼び出さない (pokedex 側のテーブルは pokedex.* でアクセス可能)。
   let db = if version == "champions" {
     let champions_path = resolve_champions_db_path_from(db_path)
-    if not(@db.file_exists(champions_path)) {
+    if !(@db.file_exists(champions_path)) {
       println(
         "Error: champions.db not found at " +
         champions_path +
@@ -1827,7 +1827,7 @@ fn run_learners(
         // version=champions の DB はレギュレーション準拠サブセットそのもの
         // なので追加 filter 不要。他 version は --regulation を弾いている。
         let limited = if limit > 0 && results.length() > limit {
-          results[:limit].to_array()
+          results[:limit].to_owned()
         } else {
           results
         }
@@ -1969,7 +1969,7 @@ fn run_damage(
   // `--attach-team` もバイパス — attach 処理は DamageCalcInput / Result が
   // 必要で、cached JSON からは復元できないため、毎回 fresh に計算する。
   let use_cache = match format {
-    @cli.Json => not(no_cache) && attach_team.length() == 0
+    @cli.Json => !(no_cache) && attach_team.length() == 0
     _ => false
   }
   let cache_key_opt : String? = if use_cache {
@@ -2410,7 +2410,7 @@ fn run_write_teams(
       None => false
     }
   }
-  if not(skip_md) {
+  if !(skip_md) {
     let rc = pkdx_write_file(@db.to_c_bytes(md_path), @db.to_c_bytes(md))
     if rc != 0 {
       exit_error("Failed to write " + md_path)
@@ -2869,14 +2869,14 @@ fn parse_double(s : String, default : Double) -> Double {
         result = result * 10.0 + d
       }
       has_digit = true
-    } else if c == 0x2E && not(in_frac) {
+    } else if c == 0x2E && !(in_frac) {
       in_frac = true
     } else {
       break
     }
     i = i + 1
   }
-  if not(has_digit) {
+  if !(has_digit) {
     return default
   }
   if negative {
@@ -2964,20 +2964,48 @@ fn format_int_array(arr : Array[Int]) -> String {
 
 ///|
 /// Render a `ProgressEvent` as a single human-readable line for stderr.
-fn format_progress_stderr(event : @payoff.ProgressEvent) -> String {
+/// `t_ms` is the elapsed time since the emitter process started (always 0
+/// before the closures wire start_ms in); `pid` lets a downstream analyser
+/// distinguish parent vs. child shard streams under parallel fan-out.
+fn format_progress_stderr(
+  event : @payoff.ProgressEvent,
+  t_ms~ : Int64,
+  pid~ : Int,
+) -> String {
+  let prefix = "[progress t=" +
+    t_ms.to_string() +
+    "ms pid=" +
+    pid.to_string() +
+    "]"
   match event {
     PhaseStart(name, total) =>
-      "[progress] phase=" + name + " start total=" + total.to_string()
+      prefix + " phase=" + name + " start total=" + total.to_string()
     PhaseProgress(name, current, total) =>
-      "[progress] phase=" +
+      prefix +
+      " phase=" +
       name +
       " " +
       current.to_string() +
       "/" +
       total.to_string()
-    PhaseEnd(name) => "[progress] phase=" + name + " end"
-    CellStart(team_sel, opp_sel, row, col) =>
-      "[progress] cell row=" +
+    PhaseEnd(name) => prefix + " phase=" + name + " end"
+    CellStart(team_sel, opp_sel, row, col, phase) =>
+      prefix +
+      " cell phase=" +
+      phase +
+      " row=" +
+      row.to_string() +
+      " col=" +
+      col.to_string() +
+      " team=" +
+      format_int_array(team_sel) +
+      " opp=" +
+      format_int_array(opp_sel)
+    CellDone(team_sel, opp_sel, row, col, phase) =>
+      prefix +
+      " cell-done phase=" +
+      phase +
+      " row=" +
       row.to_string() +
       " col=" +
       col.to_string() +
@@ -2986,7 +3014,8 @@ fn format_progress_stderr(event : @payoff.ProgressEvent) -> String {
       " opp=" +
       format_int_array(opp_sel)
     DpNode(visited, hits, depth, rows, cols, outcomes, classification) =>
-      "[progress] dp visited=" +
+      prefix +
+      " dp visited=" +
       visited.to_string() +
       " hits=" +
       hits.to_string() +
@@ -3030,7 +3059,7 @@ fn json_escape_string(s : String) -> String {
       let hex = "0123456789abcdef"
       let hi = (code >> 4) & 0xF
       let lo = code & 0xF
-      out = out + "\\u00" + hex[hi:hi + 1].to_string() + hex[lo:lo + 1].to_string()
+      out = out + "\\u00" + hex[hi:hi + 1].to_owned() + hex[lo:lo + 1].to_owned()
     } else {
       out = out + ch.to_string()
     }
@@ -3044,16 +3073,31 @@ fn json_escape_string(s : String) -> String {
 /// uses `team_indices` / `opp_indices` for the row/column selection arrays —
 /// this is the documented public schema for consumers (e.g. the grid
 /// visualiser script and downstream agents).
-fn format_progress_json(event : @payoff.ProgressEvent) -> String {
+///
+/// `t_ms` is the elapsed time (ms) since the emitter process started; `pid`
+/// is the emitter process id. Both are prepended to every event so a
+/// downstream trace analyser can distinguish parent vs. child streams and
+/// reconstruct per-cell wall time as `cell_done.t_ms - cell_start.t_ms`
+/// (same-pid pairs only — different shards have independent start_ms).
+fn format_progress_json(
+  event : @payoff.ProgressEvent,
+  t_ms~ : Int64,
+  pid~ : Int,
+) -> String {
+  let head = "\"t_ms\":" + t_ms.to_string() + ",\"pid\":" + pid.to_string() + ","
   match event {
     PhaseStart(name, total) =>
-      "{\"event\":\"phase_start\",\"phase\":\"" +
+      "{" +
+      head +
+      "\"event\":\"phase_start\",\"phase\":\"" +
       json_escape_string(name) +
       "\",\"total\":" +
       total.to_string() +
       "}"
     PhaseProgress(name, current, total) =>
-      "{\"event\":\"phase_progress\",\"phase\":\"" +
+      "{" +
+      head +
+      "\"event\":\"phase_progress\",\"phase\":\"" +
       json_escape_string(name) +
       "\",\"current\":" +
       current.to_string() +
@@ -3061,9 +3105,31 @@ fn format_progress_json(event : @payoff.ProgressEvent) -> String {
       total.to_string() +
       "}"
     PhaseEnd(name) =>
-      "{\"event\":\"phase_end\",\"phase\":\"" + json_escape_string(name) + "\"}"
-    CellStart(team_sel, opp_sel, row, col) =>
-      "{\"event\":\"cell_start\",\"row\":" +
+      "{" +
+      head +
+      "\"event\":\"phase_end\",\"phase\":\"" +
+      json_escape_string(name) +
+      "\"}"
+    CellStart(team_sel, opp_sel, row, col, phase) =>
+      "{" +
+      head +
+      "\"event\":\"cell_start\",\"phase\":\"" +
+      json_escape_string(phase) +
+      "\",\"row\":" +
+      row.to_string() +
+      ",\"col\":" +
+      col.to_string() +
+      ",\"team_indices\":" +
+      format_int_array(team_sel) +
+      ",\"opp_indices\":" +
+      format_int_array(opp_sel) +
+      "}"
+    CellDone(team_sel, opp_sel, row, col, phase) =>
+      "{" +
+      head +
+      "\"event\":\"cell_done\",\"phase\":\"" +
+      json_escape_string(phase) +
+      "\",\"row\":" +
       row.to_string() +
       ",\"col\":" +
       col.to_string() +
@@ -3073,7 +3139,9 @@ fn format_progress_json(event : @payoff.ProgressEvent) -> String {
       format_int_array(opp_sel) +
       "}"
     DpNode(visited, hits, depth, rows, cols, outcomes, classification) =>
-      "{\"event\":\"dp_node\",\"visited\":" +
+      "{" +
+      head +
+      "\"event\":\"dp_node\",\"visited\":" +
       visited.to_string() +
       ",\"hits\":" +
       hits.to_string() +
@@ -3089,6 +3157,138 @@ fn format_progress_json(event : @payoff.ProgressEvent) -> String {
       json_escape_string(classification) +
       "\"}"
   }
+}
+
+///|
+/// Pick the highest-probability index out of a strategy array. Ties break to
+/// the smallest index. Empty arrays are an internal invariant violation but
+/// we still tolerate them so stderr emission never panics on the success path.
+fn argmax_double(xs : Array[Double]) -> Int {
+  if xs.length() == 0 {
+    return 0
+  }
+  let mut best = 0
+  let mut best_v = xs[0]
+  for i in 1..<xs.length() {
+    if xs[i] > best_v {
+      best = i
+      best_v = xs[i]
+    }
+  }
+  best
+}
+
+///|
+/// Render a comma-joined string-array snippet (e.g. `ガルーラ,カバルドン`) for
+/// the human-readable summary line. JSON-style brackets are intentionally
+/// omitted because this lands in `[result] ...` text, not a JSON Line.
+fn format_name_csv(names : Array[String]) -> String {
+  let mut s = ""
+  for i in 0..<names.length() {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + names[i]
+  }
+  s
+}
+
+///|
+/// Render a `[\"a\",\"b\"]` JSON array literal. Used by the `summary` JSON
+/// Line so consumers can pull selection names without re-running the full
+/// result-JSON parse.
+fn format_string_array_json(names : Array[String]) -> String {
+  let mut s = "["
+  for i in 0..<names.length() {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + "\"" + json_escape_string(names[i]) + "\""
+  }
+  s + "]"
+}
+
+///|
+/// One-line human-readable summary of a `SelectResult` for `--progress=stderr`.
+/// Mirrors the field ordering used by `format_summary_json` so the two
+/// channels are trivially correlatable.
+fn format_summary_stderr(r : @payoff.SelectResult) -> String {
+  let my_i = argmax_double(r.row_strategy)
+  let opp_i = argmax_double(r.col_strategy)
+  let my_p = if r.row_strategy.length() == 0 { 0.0 } else { r.row_strategy[my_i] }
+  let opp_p = if r.col_strategy.length() == 0 { 0.0 } else { r.col_strategy[opp_i] }
+  let my_names = if r.selection_names.length() == 0 {
+    ([] : Array[String])
+  } else {
+    r.selection_names[my_i]
+  }
+  let opp_names = if r.opp_selection_names.length() == 0 {
+    ([] : Array[String])
+  } else {
+    r.opp_selection_names[opp_i]
+  }
+  "[result] value=" +
+  r.value.to_string() +
+  " exploitability=" +
+  r.exploitability.to_string() +
+  " my_best=[" +
+  format_name_csv(my_names) +
+  "] (p=" +
+  my_p.to_string() +
+  ") opp_best=[" +
+  format_name_csv(opp_names) +
+  "] (p=" +
+  opp_p.to_string() +
+  ")"
+}
+
+///|
+/// JSON Lines `summary` event matching the viz consumer schema. Emitted as
+/// the last stderr event of `pkdx select --progress=json`, after every
+/// `cell_done` / `phase_end`, so the viz script can render the final result
+/// without re-reading the stdout file the user redirected away.
+fn format_summary_json(r : @payoff.SelectResult) -> String {
+  let my_i = argmax_double(r.row_strategy)
+  let opp_i = argmax_double(r.col_strategy)
+  let my_p = if r.row_strategy.length() == 0 { 0.0 } else { r.row_strategy[my_i] }
+  let opp_p = if r.col_strategy.length() == 0 { 0.0 } else { r.col_strategy[opp_i] }
+  let my_indices = if r.selections.length() == 0 {
+    ([] : Array[Int])
+  } else {
+    r.selections[my_i]
+  }
+  let opp_indices = if r.opp_selections.length() == 0 {
+    ([] : Array[Int])
+  } else {
+    r.opp_selections[opp_i]
+  }
+  let my_names = if r.selection_names.length() == 0 {
+    ([] : Array[String])
+  } else {
+    r.selection_names[my_i]
+  }
+  let opp_names = if r.opp_selection_names.length() == 0 {
+    ([] : Array[String])
+  } else {
+    r.opp_selection_names[opp_i]
+  }
+  "{\"event\":\"summary\",\"value\":" +
+  r.value.to_string() +
+  ",\"exploitability\":" +
+  r.exploitability.to_string() +
+  ",\"my_best_indices\":" +
+  format_int_array(my_indices) +
+  ",\"my_best_names\":" +
+  format_string_array_json(my_names) +
+  ",\"my_best_p\":" +
+  my_p.to_string() +
+  ",\"opp_best_indices\":" +
+  format_int_array(opp_indices) +
+  ",\"opp_best_names\":" +
+  format_string_array_json(opp_names) +
+  ",\"opp_best_p\":" +
+  opp_p.to_string() +
+  "}"
 }
 
 ///|
@@ -3148,6 +3348,23 @@ fn cmd_select_shard_internal() -> @admiral.CommandDef {
         description="DP refine turn limit override (-1 = use input default)",
         default=Some(-1),
       ),
+      // Progress mode propagated from the parent. The orchestrator passes
+      // its own --progress value through so the shard emits matching
+      // JSON Lines (cell_start / cell_done) onto its inherited stderr,
+      // which surfaces as the parent's stderr stream for the grid viz.
+      @admiral.string(
+        "progress",
+        description="Progress emit mode: off|stderr|json (default: off)",
+        default=Some("off"),
+      ),
+      // DP-node trace gate, mirroring the parent's `--progress-every`. The
+      // shard forwards this to `refine_one_cell` so DpNode events fire on
+      // every Nth `value()` cache miss. 0 disables (default).
+      @admiral.int(
+        "progress-every",
+        description="Emit DP-node checkpoints every N cache misses (0 disables)",
+        default=Some(0),
+      ),
     ],
     run=Some(fn(ctx) { run_select_shard_cmd(ctx) }),
   )
@@ -3166,6 +3383,32 @@ fn run_select_shard_cmd(ctx : @admiral.Context) -> Unit {
   let refine_tl_raw = ctx_int(ctx, "refine-turn-limit")
   let mc_override = if mc_tl_raw > 0 { Some(mc_tl_raw) } else { None }
   let refine_override = if refine_tl_raw > 0 { Some(refine_tl_raw) } else { None }
+  let mode = ctx_str(ctx, "progress")
+  // Capture this child's start moment + pid so each emit can stamp the event
+  // with elapsed ms and process id. Trace analysers correlate cell_start /
+  // cell_done by `(pid, row, col)` since each shard has its own start_ms.
+  let start_ns = pkdx_monotonic_ns()
+  let pid = pkdx_pid()
+  let progress : (@payoff.ProgressEvent) -> Unit = match mode {
+    "off" => fn(_e) { () }
+    "stderr" => fn(e) {
+        let t_ms = (pkdx_monotonic_ns() - start_ns) / 1_000_000L
+        pkdx_eprintln(
+          @db.to_c_bytes(format_progress_stderr(e, t_ms~, pid~)),
+        )
+      }
+    "json" => fn(e) {
+        let t_ms = (pkdx_monotonic_ns() - start_ns) / 1_000_000L
+        pkdx_eprintln(@db.to_c_bytes(format_progress_json(e, t_ms~, pid~)))
+      }
+    _ => {
+      exit_error(
+        "unknown --progress mode: " + mode + " (expected off|stderr|json)",
+      )
+      return
+    }
+  }
+  let progress_every = ctx_int(ctx, "progress-every")
   try @payoff.run_select_shard(
     input_path,
     output_path,
@@ -3176,6 +3419,8 @@ fn run_select_shard_cmd(ctx : @admiral.Context) -> Unit {
     col_keep,
     mc_turn_limit_override=mc_override,
     refine_turn_limit_override=refine_override,
+    progress~,
+    dp_log_every=progress_every,
   ) catch {
     err => {
       exit_error(nash_cli_error_message(err))
@@ -3195,17 +3440,32 @@ fn run_select_cmd(ctx : @admiral.Context) -> Unit {
       return
     }
   }
+  // Capture the parent's start moment + pid. Children spawned for parallel
+  // shards each take their own start_ns at boot (run_select_shard_cmd), so
+  // `t_ms` is interpreted *relative to the emitting process*. Downstream
+  // trace analysis joins on `pid` to keep streams separated.
+  let start_ns = pkdx_monotonic_ns()
+  let pid = pkdx_pid()
   let (progress, dp_log_every) : ((@payoff.ProgressEvent) -> Unit, Int) = match mode {
     "off" => (fn(_e) { () }, 0)
     "stderr" =>
       (
         fn(e) {
-          pkdx_eprintln(@db.to_c_bytes(format_progress_stderr(e)))
+          let t_ms = (pkdx_monotonic_ns() - start_ns) / 1_000_000L
+          pkdx_eprintln(
+            @db.to_c_bytes(format_progress_stderr(e, t_ms~, pid~)),
+          )
         },
         log_every,
       )
     "json" =>
-      (fn(e) { pkdx_eprintln(@db.to_c_bytes(format_progress_json(e))) }, log_every)
+      (
+        fn(e) {
+          let t_ms = (pkdx_monotonic_ns() - start_ns) / 1_000_000L
+          pkdx_eprintln(@db.to_c_bytes(format_progress_json(e, t_ms~, pid~)))
+        },
+        log_every,
+      )
     _ => {
       exit_error("unknown --progress mode: " + mode + " (expected off|stderr|json)")
       return
@@ -3231,12 +3491,14 @@ fn run_select_cmd(ctx : @admiral.Context) -> Unit {
   // is dropped for the parallel path so SQLite write contention does
   // not happen. (The shard worker passes disk=None internally.)
   let parent_disk = if parallel > 1 { None } else { disk }
-  let out = try @payoff.run_select(
+  let result = try @payoff.run_select_typed(
       raw,
       disk=parent_disk,
       progress~,
       dp_log_every~,
       parallel~,
+      child_progress_mode=mode,
+      child_progress_every=dp_log_every,
     ) catch {
     err => {
       match disk {
@@ -3251,7 +3513,17 @@ fn run_select_cmd(ctx : @admiral.Context) -> Unit {
     Some(c) => @damage_cache.close(c)
     None => ()
   }
-  println(out)
+  // Summary lands on stderr (matching the chosen --progress mode) so a
+  // user who has redirected stdout to a result file still sees the
+  // value / best-selection at the end of the live viz stream. `off`
+  // suppresses summary too — same gate as per-cell progress.
+  match mode {
+    "stderr" =>
+      pkdx_eprintln(@db.to_c_bytes(format_summary_stderr(result)))
+    "json" => pkdx_eprintln(@db.to_c_bytes(format_summary_json(result)))
+    _ => ()
+  }
+  println(@payoff.serialize_select_result(result))
 }
 
 ///|

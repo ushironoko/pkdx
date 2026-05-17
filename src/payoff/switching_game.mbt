@@ -73,7 +73,7 @@ pub(all) struct SwitchingGameState {
   my_moves_used : Array[Int]
   opp_moves_used : Array[Int]
   turn : Int
-} derive(Show, Eq, Hash)
+} derive(Debug, Eq, Hash)
 
 ///|
 /// Fresh `None`-filled status array sized for a team. Used at game entry
@@ -153,7 +153,7 @@ pub(all) struct SideAttempt {
   acts : Bool
   action : ActionKind
   post_status : @model.StatusCondition
-} derive(Show)
+} derive(Debug)
 
 ///|
 /// Paralyze: 12.5% chance of full-turn failure (gen7+ freeze/paralysis rate).
@@ -414,7 +414,7 @@ pub fn apply_contact_proc_fanout(
     def_ability=defender.ability,
     critical=false,
   )
-  if not(@damage.resolve_move_contact(mv, sr.force_contact)) {
+  if !(@damage.resolve_move_contact(mv, sr.force_contact)) {
     return [(1.0, state)]
   }
   // move 自体が連結しないケース (type immunity / ability immunity) は
@@ -547,7 +547,7 @@ pub fn apply_contact_proc_fanout(
         break
       }
     }
-    if not(merged) {
+    if !(merged) {
       combined.push((kind, item_contrib))
     }
   }
@@ -708,8 +708,8 @@ pub fn apply_item_pre_damage_proc_fanout(
   // resist berries trigger only on super-effective hits. Mirrors the engine
   // gate in `damage/engine.mbt`'s resist-berry block.
   let triggers_on_neutral = defender.item == "ホズのみ"
-  if not(triggers_on_neutral) &&
-    not(
+  if !(triggers_on_neutral) &&
+    !(
       @damage.is_super_effective(
         resolved_type, defender.pokemon.type1, defender.pokemon.type2,
       ),
@@ -825,7 +825,7 @@ pub fn apply_item_post_damage_proc_fanout(
       @damage.HitPlan::Single => false
       _ => true
     }
-    if not(is_multi_hit) {
+    if !(is_multi_hit) {
       return [
         (
           1.0,
@@ -1114,7 +1114,7 @@ pub(all) enum ActionKind {
   // marks `*_megaed[active] = true` so the post-mega stats/type/ability persist
   // across later switches.
   Mega(Int)
-} derive(Show, Eq)
+} derive(Debug, Eq)
 
 ///|
 /// Live progress events emitted from the SwitchingGame DP and the screened
@@ -1125,25 +1125,37 @@ pub(all) enum ActionKind {
 ///   count for the phase (cells for A/C, 1 for B).
 /// - `PhaseProgress(name, current, total)` — increment marker within a phase.
 /// - `PhaseEnd(name)` — phase completion.
-/// - `CellStart(team_indices, opp_indices, row, col)` — entering a selection
-///   cell of the team-payoff matrix. `row` / `col` are the indices in the
-///   original `combinations_with_lead(n, k)` enumeration (0..size_a × 0..size_b),
-///   so a visualiser can paint a fixed grid (e.g. 60×60 for 6-vs-6 single)
-///   regardless of whether the screened pipeline has dropped some cells.
+/// - `CellStart(team_indices, opp_indices, row, col, phase)` — entering a
+///   selection cell of the team-payoff matrix. `row` / `col` are the indices
+///   in the original `combinations_with_lead(n, k)` enumeration
+///   (0..size_a × 0..size_b), so a visualiser can paint a fixed grid (e.g.
+///   60×60 for 6-vs-6 single) regardless of whether the screened pipeline
+///   has dropped some cells. `phase` carries the originating phase name
+///   ("screening" / "dp-refine" / "dp-full") so a visualiser can colour the
+///   cell without consulting the surrounding `PhaseStart` / `PhaseEnd`
+///   brackets — under parallel fan-out, child shards write to the parent's
+///   inherited stderr, and the kernel pipe does not guarantee ordering
+///   between a child's last `CellDone` and the parent's next `PhaseStart`,
+///   so phase has to travel with the event.
+/// - `CellDone(team_indices, opp_indices, row, col, phase)` — paired
+///   completion event for `CellStart`. Emitted when the per-cell compute
+///   finishes; carries the same `phase` string as its matching `CellStart`.
 /// - `DpNode(visited, hits, depth, rows, cols, outcomes, classification)` —
 ///   DP recursion checkpoint (emitted from `value()` every
 ///   `ValueStats::log_every` cache misses). `visited` is the running miss
 ///   count, `hits` the running cache-hit count, `depth` the recursion depth
 ///   of the sample node, `rows × cols` the per-turn action matrix at that
 ///   node, `outcomes` the stochastic edges walked from it, and
-///   `classification` one of `"saddle"` / `"nash"` / `"pruned"`.
+///   `classification` one of `"saddle"` / `"nash"` / `"pruned"` (β-cutoff) /
+///   `"alpha_pruned"` (α-cutoff at node level when `upper ≤ alpha + eps`).
 pub(all) enum ProgressEvent {
   PhaseStart(String, Int)
   PhaseProgress(String, Int, Int)
   PhaseEnd(String)
-  CellStart(Array[Int], Array[Int], Int, Int)
+  CellStart(Array[Int], Array[Int], Int, Int, String)
+  CellDone(Array[Int], Array[Int], Int, Int, String)
   DpNode(Int, Int, Int, Int, Int, Int, String)
-} derive(Show)
+} derive(Debug)
 
 ///|
 /// Observability hooks for memoization: callers can inspect hit/miss counts
@@ -1277,10 +1289,10 @@ pub fn terminal_value(
 ) -> Double? {
   let my_alive = any_alive(state.my_hps)
   let opp_alive = any_alive(state.opp_hps)
-  if not(my_alive) {
+  if !(my_alive) {
     return Some(-1.0)
   }
-  if not(opp_alive) {
+  if !(opp_alive) {
     return Some(1.0)
   }
   if state.turn >= turn_limit {
@@ -1613,7 +1625,7 @@ fn apply_damage_variants_fanout(
   // `damage_variants_cached` so that the engine's variant table is
   // memoised across recursion. Inside this helper we own the per-variant
   // state mutation and the four post-hit fanouts only.
-  let target_is_me = not(attacker_is_me)
+  let target_is_me = !(attacker_is_me)
   let target_slot = defender_active
   let attacker_slot = attacker_active
   let leaves : Array[(Double, SwitchingGameState)] = []
@@ -1831,8 +1843,8 @@ pub fn new_damage_cache(
   disk~ : @damage_cache.DamageDiskCache? = None,
 ) -> DamageCache {
   {
-    data: @hashmap.HashMap::new(),
-    variants_data: @hashmap.HashMap::new(),
+    data: @hashmap.HashMap([]),
+    variants_data: @hashmap.HashMap([]),
     disk,
     hits: 0,
     misses: 0,
@@ -3526,7 +3538,6 @@ pub fn value(
   beta~ : Double = 1.0,
   depth~ : Int = 0,
 ) -> Double {
-  let _ = alpha // Reserved for future symmetric α-cutoff; see doc comment.
   match terminal_value(state, my_team, opp_team, turn_limit) {
     Some(v) => return v
     None => ()
@@ -3613,9 +3624,8 @@ pub fn value(
     maybe_emit_dp_node(stats, depth, rows, cols, total_outcomes, "pruned")
     return lower
   }
-  // All rows filled: check for a pure saddle (maxmin == minmax within tolerance)
-  // and skip the LP if so. This both speeds up trivially-resolved subgames and
-  // avoids funnelling highly degenerate matrices into the simplex path.
+  // All rows filled: compute upper = min over j of col_max[j], which is now
+  // the tight minimax bound on this node's Nash value (Nash(A) ≤ upper).
   let mut upper = 2.0
   for j in 0..<cols {
     let mut col_max = -2.0
@@ -3629,6 +3639,18 @@ pub fn value(
       upper = col_max
     }
   }
+  // α-cutoff: caller's interest range is `[alpha, beta]`. If Nash ≤ upper ≤ α,
+  // we know the value is below the caller's threshold without solving the LP.
+  // Return `upper` as a valid upper bound; do NOT cache because a different
+  // caller with a tighter `α` would miss the true Nash. Symmetric to the
+  // β-cutoff above (which returns `lower` as a valid lower bound).
+  if upper <= alpha + VALUE_PRUNE_EPS {
+    maybe_emit_dp_node(stats, depth, rows, cols, total_outcomes, "alpha_pruned")
+    return upper
+  }
+  // Pure saddle check: maxmin == minmax within tolerance ⇒ skip the LP. Speeds
+  // up trivially-resolved subgames and avoids funnelling highly degenerate
+  // matrices into the simplex path.
   if upper - lower <= VALUE_SADDLE_TOL {
     let saddle = (upper + lower) / 2.0
     cache.set(state, saddle)
@@ -3744,7 +3766,7 @@ pub fn switching_game_winrate_stats(
     opp_moves_used: Array::make(opp_team.length(), 0),
     turn: 0,
   }
-  let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap::new()
+  let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
   let stats = new_stats_with_progress(progress, dp_log_every)
   let dmg_cache = new_damage_cache(disk~)
   let v = value(state, my_team, opp_team, turn_limit, cache, stats, dmg_cache)
