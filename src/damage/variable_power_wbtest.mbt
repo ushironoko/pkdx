@@ -101,6 +101,7 @@ fn vp_input(
     def_item_removable,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    incoming: None,
   }
 }
 

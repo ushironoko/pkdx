@@ -93,6 +93,7 @@ fn dg_input(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active,
+    incoming: None,
   }
 }
 
