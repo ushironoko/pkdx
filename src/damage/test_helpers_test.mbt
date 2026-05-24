@@ -131,6 +131,7 @@ fn mk_damage_input(
   def_item_removable? : Bool = false,
   multi_hit_mode? : @model.MultiHit = @model.MultiHit::Auto,
   disguise_active? : Bool = false,
+  incoming? : @model.IncomingOpts? = None,
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -165,5 +166,6 @@ fn mk_damage_input(
     def_item_removable,
     multi_hit_mode,
     disguise_active,
+    incoming,
   }
 }

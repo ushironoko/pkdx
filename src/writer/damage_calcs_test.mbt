@@ -88,6 +88,7 @@ fn mk_input_for_test(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    incoming: None,
   }
 }
 
@@ -114,6 +115,7 @@ fn mk_result_for_test(
     defender_hp: 175,
     is_immune: false,
     disguise_blocked: false,
+    disguise_chip: 0,
     hits_dealt: 1,
     variants: [],
   }

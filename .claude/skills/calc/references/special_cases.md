@@ -26,14 +26,16 @@ pkdx damage "メガガルーラ" "ハピナス" "すてみタックル" \
 ### ばけのかわ (Disguise)
 
 - **発動条件**: 防御側特性 `ばけのかわ` かつ `--disguise-active` (`disguise_active: true`)
-- **挙動**: 初撃として全 damages を 0 で返し、状態遷移を示すフラグを立てる (`damage/engine.mbt:441-443`, `560-580`)
+- **挙動**: 通常のダメージ計算結果に「ばけのかわ消費 chip = 防御側 HP / 8 (整数床)」を 16 段階の各ロールに加算して返す。これにより `damages[]` は「ばけのかわが剥がれる際の chip + 実際の技ダメージ」を一発で表す合算値になる (`damage/engine.mbt` の variants ループ末尾)
 - **JSON 出力**:
-  - `damages: [0]×16`, `percents: [0.0]×16`
-  - `disguise_blocked: true`
-  - `ko_text: "けがわブロック"`
-  - `is_immune: false` (**免疫ではない** ─ 1/8 HP チップは呼び出し側責任)
-  - `hits_dealt: 0`
+  - `damages[i] = base_damage[i] + chip` (chip = `def_hp / 8`)
+  - `disguise_blocked: true` (chip 加算済みフラグ)
+  - `disguise_chip: <chip 値>` (内訳)
+  - `ko_text` は加算後の値で再計算
+  - `is_immune: false`
+  - `hits_dealt`: 通常通り技の hit 数 (chip は ability proc であり hit ではない)
 - **2 撃目以降**: `--disguise-active` を外して再計算 (エンジンは状態を持たない)
+- **非 ばけのかわ防御側**: `--disguise-active` 指定でも chip は加算されない (通常ダメージ)
 
 ### てんねん (Unaware)
 
@@ -75,6 +77,58 @@ pkdx damage "メガガルーラ" "ハピナス" "すてみタックル" \
 - **シェルアームズの同点処理**: 厳密 `>` で物理判定。等号は特殊側 ─ 境界ケースで期待と食い違いやすいので注意
 - **Wonder Room**: 上記すべて **未対応** (`WONDER_ROOM_NOT_SUPPORTED` コメント多数)。シングル前提で設計されているため、Wonder Room 下の Def/SpD 入れ替えは考慮していない
 - **ボディプレス時の `--atk-rank`**: B ランクを渡す (攻撃ランクではなく防御ランク)。SKILL.md 側でもユーザーに注記する
+
+### 反射技 (カウンター / ミラーコート / メタルバースト / ほうふく)
+
+| 技 | 倍率 | 反射対象 | タイプ | 優先度 | タイプ無効 |
+|---|---|---|---|---|---|
+| カウンター | 2.0 | 物理のみ | かくとう | -5 | ゴースト |
+| ミラーコート | 2.0 | 特殊のみ | エスパー | -5 | あく |
+| メタルバースト | 1.5 | 物理 + 特殊 | はがね | 0 (後攻時) | (なし) |
+| ほうふく | 1.5 | 物理 + 特殊 | あく | 0 (後攻時) | (なし) |
+
+通常の威力ベース計算 (`base_power → effective_power → 16-roll`) は **走らない**。
+受けたダメージ × 倍率の固定計算 + 反射技自身のタイプ無効判定のみ適用される。
+急所・乱数は仕様上なしだが、CLI 出力では Step1 の 16 段乱数に倍率を乗算した
+配列を `damages[]` に返すので、相手側の乱数幅を継承した結果になる。
+
+**CLI 例**:
+
+```bash
+# 必須フラグ (両方欠損なら反射技指定はエラー、非反射技に --incoming-* 指定もエラー)
+bin/pkdx damage <reflect_user> <reflected_target> <反射技> \
+  --incoming-attacker <reflected_target> \
+  --incoming-move <相手の技> \
+  --format json
+
+# Incoming 側の補正フラグ群 (全て任意、外側 --atk-* と対称)
+#   --incoming-atk-ability    特性 (もうか / すなのちから / いかく ...)
+#   --incoming-atk-item       持ち物 (こだわりハチマキ / いのちのたま / とつげきチョッキ ...)
+#   --incoming-atk-nature     性格 (いじっぱり / ようき / ひかえめ ...)
+#   --incoming-atk-rank       攻撃ランク段 (-6..+6)
+#   --incoming-atk-stat       攻撃stat実数値 override
+#   --incoming-atk-status     状態異常 (burn 等)
+#   --incoming-atk-rank-up-count  ランク上昇累計 (アシストパワー用)
+#   --incoming-atk-hp         HP 比 (やけっぱち用、例 1/2)
+#   --incoming-tera-type      テラスタイプ
+#   --incoming-critical       急所だった場合
+```
+
+- 反射ダメージは「相手 = `--incoming-attacker`」に与える。JSON の `defender_hp`
+  は反射先の HP (`--def-hp` override 適用後)。
+- JSON の `input.reflect` には `kind` / `multiplier_num,den` / incoming 側の
+  全 modifier を echo する (反射技以外では完全に省略され、既存 JSON 形状と互換)。
+- 反射する側の **防御コンテキスト** (外側 `--atk-ability` / `--atk-item` /
+  `--atk-rank` / `--atk-status` / `--atk-nature`) は Step1 の defender 側に
+  そのまま流れる。例: `ハピナス カウンター --atk-ability マルチスケイル` で
+  ハピナスの HP 満タン時にマルチスケイル軽減を反映できる。
+
+**Nash 側の制約**: `payoff/switching_game.mbt` の反射評価は「相手の物理/特殊技
+の平均ダメージ × 反射倍率 × p_slow × p_hit」で行う。メタルバースト / ほうふく
+は base speed 比較で「明らかに先制する場合は 0」とし、相手の優先度技に対しては
+p_slow=1 で必ず反射が成立する扱い。speed rank・スカーフ等の補正は payoff 経路
+では未反映 (compute_damage_variants が speed rank を伝播していないため)。CLI
+の damage では incoming-* で全補正反映できる。
 
 ### ウェザーボール
 
@@ -411,8 +465,9 @@ pkdx damage "イッカネズミ" "ピカチュウ" "ネズミざん" --version s
 | `ko` / `ko_text` | `String` | 確定数テキスト (`"確定1発"` / `"乱数1発(X/16)"` / `"確定2発"` ...) |
 | `defender_hp` | `Int` | 防御側 HP 実数値 |
 | `is_immune` | `Bool` | タイプ相性 0 / 特性無効時 `true`。**ばけのかわの場合は `false`** |
-| `disguise_blocked` | `Bool` | ばけのかわで初撃が通らなかった時 `true` |
-| `hits_dealt` | `Int` | 実際の命中回数 (免疫時 1、Disguise 時 0、ParentalBond 時 2) |
+| `disguise_blocked` | `Bool` | ばけのかわ chip が `damages` に加算された時 `true` |
+| `disguise_chip` | `Int` | 加算された chip 値 (`def_hp / 8`、整数床)。0 なら未加算 |
+| `hits_dealt` | `Int` | 技の hit 数 (免疫時 1、Disguise 時も技の hit 数を保持、ParentalBond 時 2) |
 | `input` | `Object` | ダメ計に実際に渡した入力一式の echo (`cli/format.mbt` の `damage_input_to_json`)。下記 8.1 参照 |
 
 ### 8.1 `input` フィールド
