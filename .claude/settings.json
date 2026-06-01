@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/type-claim-guard.py",
+            "command": "bin/pkdx hook type-guard",
             "timeout": 5000
           }
         ]

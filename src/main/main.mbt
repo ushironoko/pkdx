@@ -214,6 +214,7 @@ fn build_cli() -> @admiral.CliApp {
       cmd_db(),
       cmd_regulation(),
       cmd_context(),
+      cmd_hook(),
     ],
   )
 }
