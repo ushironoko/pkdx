@@ -106,6 +106,8 @@ fn damage_input_to_json(input : @model.DamageCalcInput) -> String {
   multi_hit_to_canonical(input.multi_hit_mode) +
   "\",\"disguise_active\":" +
   bool_to_json(input.disguise_active) +
+  ",\"protean_consumed\":" +
+  bool_to_json(input.protean_consumed) +
   reflect_section_or_empty(input) +
   "}"
 }
@@ -404,7 +406,14 @@ fn damage_to_table(
   let dfn = input.defender
   let mv = input.move_
   let double_tag = if input.is_double { " [ダブル]" } else { "" }
-  let mut s = atk.name_ja + " → " + dfn.name_ja + " (" + mv.name + ")" + double_tag + "\n"
+  let mut s = atk.name_ja +
+    " → " +
+    dfn.name_ja +
+    " (" +
+    mv.name +
+    ")" +
+    double_tag +
+    "\n"
   s = s + "─".to_string().repeat(50) + "\n"
   // Damage range
   s = s +

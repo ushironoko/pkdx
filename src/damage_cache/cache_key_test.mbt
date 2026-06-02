@@ -36,6 +36,7 @@ fn baseline() -> CacheKeyInput {
     def_item_removable: false,
     multi_hit_mode: "",
     disguise_active: false,
+    protean_consumed: false,
     incoming_attacker: "",
     incoming_move: "",
     incoming_atk_ability: "",
@@ -49,6 +50,8 @@ fn baseline() -> CacheKeyInput {
     incoming_atk_hp_den: 0,
     incoming_tera_type: "",
     incoming_critical: false,
+    atk_protean_locked: "",
+    def_protean_locked: "",
   }
 }
 
@@ -104,6 +107,9 @@ test "build_cache_key: single-field change yields distinct key" {
     { ..baseline(), def_item_removable: true },
     { ..baseline(), multi_hit_mode: "fixed:5" },
     { ..baseline(), disguise_active: true },
+    // v5 addition: Protean/Libero consumed state must split the key so the
+    // boosted (first use) and unboosted (already activated) cases don't alias.
+    { ..baseline(), protean_consumed: true },
     // v3+v4 additions: reflect-move incoming inputs and modifier echo.
     { ..baseline(), incoming_attacker: "カイリュー" },
     { ..baseline(), incoming_move: "りゅうせいぐん" },
@@ -118,6 +124,9 @@ test "build_cache_key: single-field change yields distinct key" {
     { ..baseline(), incoming_atk_hp_den: 4 },
     { ..baseline(), incoming_tera_type: "じめん" },
     { ..baseline(), incoming_critical: true },
+    // v6 additions: Protean/Libero ロックタイプの両側トークン。
+    { ..baseline(), atk_protean_locked: "ほのお" },
+    { ..baseline(), def_protean_locked: "みず" },
   ]
   for i = 0; i < mutations.length(); i = i + 1 {
     guard build_cache_key(mutations[i]) is Ok(k) else {
@@ -150,8 +159,16 @@ test "build_cache_key: swap attacker/defender ability yields distinct key" {
 /// Adjacent empty disambiguation: `(attacker="", defender="x")` and
 /// `(attacker="x", defender="")` must not collapse to the same key.
 test "build_cache_key: adjacent empty fields are disambiguated" {
-  let a : CacheKeyInput = { ..baseline(), attacker: "", defender: "カイリュー" }
-  let b : CacheKeyInput = { ..baseline(), attacker: "カイリュー", defender: "" }
+  let a : CacheKeyInput = {
+    ..baseline(),
+    attacker: "",
+    defender: "カイリュー",
+  }
+  let b : CacheKeyInput = {
+    ..baseline(),
+    attacker: "カイリュー",
+    defender: "",
+  }
   guard build_cache_key(a) is Ok(k1) else { fail("unexpected Err") }
   guard build_cache_key(b) is Ok(k2) else { fail("unexpected Err") }
   assert_true(k1 != k2)
@@ -199,17 +216,20 @@ test "build_cache_key: rejects trailing whitespace" {
 }
 
 ///|
-/// v4 schema bump: baseline key must start with the new version prefix so a
-/// damage_cache.sqlite written under v2/v3 cannot collide with v4 entries.
-test "build_cache_key: v4 schema prefix" {
+/// v6 schema bump: baseline key must start with the new version prefix so a
+/// damage_cache.sqlite written under v2/v3/v4/v5 cannot collide with v6 entries.
+test "build_cache_key: v6 schema prefix" {
   guard build_cache_key(baseline()) is Ok(k) else { fail("unexpected Err") }
-  assert_true(k.has_prefix("v4|"))
+  assert_true(k.has_prefix("v6|"))
 }
 
 ///|
 /// Reflect inputs participate in validation: pipe characters are rejected.
 test "build_cache_key: rejects pipe character in incoming_attacker" {
-  let input : CacheKeyInput = { ..baseline(), incoming_attacker: "カイ|リュー" }
+  let input : CacheKeyInput = {
+    ..baseline(),
+    incoming_attacker: "カイ|リュー",
+  }
   match build_cache_key(input) {
     Ok(_) => fail("expected Err for pipe in incoming_attacker")
     Err(_) => ()

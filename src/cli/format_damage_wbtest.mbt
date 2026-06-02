@@ -44,6 +44,9 @@ fn fd_move(name : String, type_ : String) -> @model.Move {
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -52,7 +55,7 @@ fn fd_input(
   attacker : @model.Pokemon,
   defender : @model.Pokemon,
   mv : @model.Move,
-  incoming~ : @model.IncomingOpts? = None,
+  incoming? : @model.IncomingOpts? = None,
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -87,6 +90,7 @@ fn fd_input(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    protean_consumed: false,
     incoming,
   }
 }
@@ -97,17 +101,17 @@ fn fd_input(
 fn fd_incoming(
   attacker : @model.Pokemon,
   move_ : @model.Move,
-  atk_ability~ : String = "",
-  atk_item~ : String = "",
-  atk_nature~ : @model.Nature? = None,
-  atk_rank~ : Int = 0,
-  atk_stat_override~ : Int = 0,
-  atk_status_condition~ : @model.StatusCondition = @model.StatusCondition::None,
-  atk_rank_up_count~ : Int = 0,
-  atk_hp_num~ : Int = 2,
-  atk_hp_den~ : Int = 2,
-  tera_type~ : String = "",
-  critical~ : Bool = false,
+  atk_ability? : String = "",
+  atk_item? : String = "",
+  atk_nature? : @model.Nature? = None,
+  atk_rank? : Int = 0,
+  atk_stat_override? : Int = 0,
+  atk_status_condition? : @model.StatusCondition = @model.StatusCondition::None,
+  atk_rank_up_count? : Int = 0,
+  atk_hp_num? : Int = 2,
+  atk_hp_den? : Int = 2,
+  tera_type? : String = "",
+  critical? : Bool = false,
 ) -> @model.IncomingOpts {
   {
     attacker,
@@ -136,7 +140,9 @@ test "format_damage JSON: reflect sub-object emitted when incoming_* is Some" {
   let reflect_mv = fd_move("ミラーコート", "エスパー")
   let incoming_mv = fd_move("りゅうせいぐん", "ドラゴン")
   let input = fd_input(
-    user, opponent, reflect_mv,
+    user,
+    opponent,
+    reflect_mv,
     incoming=Some(fd_incoming(opponent, incoming_mv)),
   )
   let json = damage_input_to_json(input)
@@ -163,10 +169,18 @@ test "format_damage JSON: reflect echo carries incoming-side modifiers" {
   let reflect_mv = fd_move("ミラーコート", "エスパー")
   let incoming_mv = fd_move("りゅうせいぐん", "ドラゴン")
   let opts = fd_incoming(
-    opponent, incoming_mv, atk_ability="マルチスケイル", atk_item="いのちのたま",
-    atk_rank=2, atk_stat_override=200, tera_type="ドラゴン", critical=true,
+    opponent,
+    incoming_mv,
+    atk_ability="マルチスケイル",
+    atk_item="いのちのたま",
+    atk_rank=2,
+    atk_stat_override=200,
+    tera_type="ドラゴン",
+    critical=true,
   )
-  let json = damage_input_to_json(fd_input(user, opponent, reflect_mv, incoming=Some(opts)))
+  let json = damage_input_to_json(
+    fd_input(user, opponent, reflect_mv, incoming=Some(opts)),
+  )
   assert_true(json.contains("\"incoming_ability\":\"マルチスケイル\""))
   assert_true(json.contains("\"incoming_item\":\"いのちのたま\""))
   assert_true(json.contains("\"incoming_rank\":2"))
@@ -177,8 +191,8 @@ test "format_damage JSON: reflect echo carries incoming-side modifiers" {
 
 ///|
 /// Backward compatibility byte-level pin: a non-reflect call with both
-/// incoming_* = None must produce JSON whose `input` block ends with the
-/// pre-existing `"disguise_active":...}` and contains NO `reflect` field.
+/// incoming_* = None must produce JSON whose `input` block ends with
+/// `"protean_consumed":...}` and contains NO `reflect` field.
 /// If a future refactor accidentally adds a stray field, this test fails.
 test "format_damage JSON: non-reflect input has no reflect sub-object (legacy compat)" {
   let attacker = fd_pokemon("ガブリアス", "ドラゴン", 200)
@@ -188,9 +202,9 @@ test "format_damage JSON: non-reflect input has no reflect sub-object (legacy co
   let json = damage_input_to_json(input)
   // Negative pin: the reflect field name does not appear.
   assert_true(!json.contains("\"reflect\":"))
-  // Positive pin: the JSON closes immediately after disguise_active, exactly
-  // as it did before the reflect addition.
-  assert_true(json.has_suffix("\"disguise_active\":false}"))
+  // Positive pin: the JSON closes immediately after protean_consumed (the
+  // last non-reflect field), exactly as the non-reflect shape requires.
+  assert_true(json.has_suffix("\"protean_consumed\":false}"))
 }
 
 ///|
@@ -203,7 +217,9 @@ test "format_damage JSON: reflect multiplier matches move kind" {
   let reflect_mv = fd_move("メタルバースト", "はがね")
   let incoming_mv = fd_move("じしん", "じめん")
   let input = fd_input(
-    user, opponent, reflect_mv,
+    user,
+    opponent,
+    reflect_mv,
     incoming=Some(fd_incoming(opponent, incoming_mv)),
   )
   let json = damage_input_to_json(input)

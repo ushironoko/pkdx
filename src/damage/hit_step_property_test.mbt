@@ -44,6 +44,9 @@ fn hsp_move(name : String) -> @model.Move {
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -52,7 +55,7 @@ fn hsp_input(
   attacker : @model.Pokemon,
   defender : @model.Pokemon,
   move_ : @model.Move,
-  atk_ability~ : String = "",
+  atk_ability? : String = "",
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -87,6 +90,7 @@ fn hsp_input(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    protean_consumed: false,
     incoming: None,
   }
 }
@@ -163,7 +167,9 @@ test "Random2to5 and TripleVariant are mutually exclusive on resolve_auto_hits" 
     let spec = resolve_auto_hits(triple_set[i])
     @debug.debug_inspect(spec, content="FixedHit(3)")
   }
-  let random_2_5 = ["みだれづき", "ロックブラスト", "みずしゅりけん"]
+  let random_2_5 = [
+    "みだれづき", "ロックブラスト", "みずしゅりけん",
+  ]
   for i = 0; i < random_2_5.length(); i = i + 1 {
     let spec = resolve_auto_hits(random_2_5[i])
     @debug.debug_inspect(spec, content="Random2to5")

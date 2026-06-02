@@ -43,6 +43,9 @@ fn mk_move_for_test(
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -88,6 +91,7 @@ fn mk_input_for_test(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    protean_consumed: false,
     incoming: None,
   }
 }
@@ -204,9 +208,7 @@ test "build_damage_calc_entry: ransuu omits guaranteed_hits" {
   let move_ = mk_move_for_test("mv", "fire", Special, 80)
   let input = mk_input_for_test(atk, def, move_, 0, 0, false)
   let result = mk_result_for_test(
-    "\u{4E71}\u{6570}1\u{767A}(12/16)",
-    87.0,
-    102.0,
+    "\u{4E71}\u{6570}1\u{767A}(12/16)", 87.0, 102.0,
   )
   let entry = build_damage_calc_entry(input, result, "", "")
   guard entry is Object(e) else { fail("entry must be object") }
@@ -223,7 +225,9 @@ test "build_damage_calc_entry: ransuu omits guaranteed_hits" {
   assert_true(att.get("item") == None)
   assert_true(att.get("nature") == None)
   assert_true(att.get("tera_type") == None)
-  guard e.get("defender") is Some(Object(defn)) else { fail("defender missing") }
+  guard e.get("defender") is Some(Object(defn)) else {
+    fail("defender missing")
+  }
   assert_true(defn.get("tera_type") == None)
 }
 
@@ -259,7 +263,8 @@ test "validate_attach_team_path: rejects traversal" {
   guard validate_attach_team_path("box/teams/../etc/passwd.meta.json") is Err(_) else {
     fail("traversal via .. must be rejected")
   }
-  guard validate_attach_team_path("box/teams/sub/../../.ssh/id.meta.json") is Err(_) else {
+  guard validate_attach_team_path("box/teams/sub/../../.ssh/id.meta.json")
+    is Err(_) else {
     fail("nested traversal must be rejected")
   }
 }

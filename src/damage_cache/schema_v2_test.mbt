@@ -6,8 +6,8 @@
 /// on multi-hit moves.
 
 ///|
-test "SCHEMA_VERSION is 4 (bumped for damage input echo in cli/format.mbt)" {
-  @debug.debug_inspect(SCHEMA_VERSION, content="4")
+test "SCHEMA_VERSION is 6 (bumped for protean lock type in cache key)" {
+  @debug.debug_inspect(SCHEMA_VERSION, content="6")
 }
 
 ///|

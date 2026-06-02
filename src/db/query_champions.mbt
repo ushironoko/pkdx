@@ -126,42 +126,74 @@ fn query_champions_forms(
 /// Champions レギュレーションでの技プールを `pokemon.id` (例: "0959000")
 /// 経由で引く。move_meta は pokedex.db 側のテーブルで、本関数は
 /// `attach_pokedex` 済みの connection を期待する (= `pokedex.move_meta`
-/// として参照可能)。move_meta が attached でないインストールでは LEFT JOIN
-/// が黙って NULL を返し、`COALESCE` のデフォルトに落ちるので動作上は安全。
+/// として参照可能)。
+///
+/// m014 (move_meta に heal_* / weather_set 列を追加) が pokedex.db に
+/// 適用済みであることが prerequisite。SELECT 列が存在しない pokedex.db
+/// では SQLite が `no such column` を返して prepare に失敗するため、
+/// `setup.sh` (= 全 migration を走らせる) を実行してから本クエリを呼ぶ
+/// 運用にする。`COALESCE` は行の NULL を埋めるだけで列の存在は保証しない
+/// 点に注意。
 pub fn query_champions_moves(
   db : Db,
   pokemon_id : String,
 ) -> Result[Array[@model.Move], String] {
-  let sql =
-    #|SELECT DISTINCT m.waza, m.type, m.category,
-    #|       m.power, m.accuracy, m.pp, l.conditions AS learn_method,
-    #|       COALESCE(mm.priority, 0) AS priority,
-    #|       COALESCE(mm.stat_effects_json, '[]') AS stat_effects_json,
-    #|       COALESCE(mm.ailment_ja, '') AS ailment_ja,
-    #|       COALESCE(mm.ailment_chance, 100) AS ailment_chance,
-    #|       COALESCE(mm.recoil_num, 0) AS recoil_num,
-    #|       COALESCE(mm.recoil_den, 1) AS recoil_den,
-    #|       COALESCE(mm.self_ko, 0) AS self_ko,
-    #|       COALESCE(mm.recharge, 0) AS recharge
-    #|FROM learnset l
-    #|JOIN move m ON l.waza = m.waza
-    #|LEFT JOIN pokedex.move_meta mm ON mm.name_ja = m.waza
-    #|WHERE l.id = ?
-    #|ORDER BY CAST(REPLACE(m.power, '-', '0') AS INTEGER) DESC
-  collect_champions_moves_rows(db, sql, [pokemon_id])
+  // Issue #3: ATTACH 済み `pokedex.move_meta` に対して PRAGMA で列存在を確認。
+  let heal_cols = if move_meta_has_heal_columns(db, "pokedex") {
+    healing_select_columns()
+  } else {
+    ""
+  }
+  // C-4 / m015: field 列も独立 PRAGMA detect (ATTACH 済 pokedex.move_meta)
+  let field_cols = if move_meta_has_field_columns(db, "pokedex") {
+    field_select_columns()
+  } else {
+    ""
+  }
+  let sql = "SELECT DISTINCT m.waza, m.type, m.category,\n" +
+    "       m.power, m.accuracy, m.pp, l.conditions AS learn_method,\n" +
+    "       COALESCE(mm.priority, 0) AS priority,\n" +
+    "       COALESCE(mm.stat_effects_json, '[]') AS stat_effects_json,\n" +
+    "       COALESCE(mm.ailment_ja, '') AS ailment_ja,\n" +
+    "       COALESCE(mm.ailment_chance, 100) AS ailment_chance,\n" +
+    "       COALESCE(mm.recoil_num, 0) AS recoil_num,\n" +
+    "       COALESCE(mm.recoil_den, 1) AS recoil_den,\n" +
+    "       COALESCE(mm.self_ko, 0) AS self_ko,\n" +
+    "       COALESCE(mm.recharge, 0) AS recharge" +
+    heal_cols +
+    field_cols +
+    "\nFROM learnset l\n" +
+    "JOIN move m ON l.waza = m.waza\n" +
+    "LEFT JOIN pokedex.move_meta mm ON mm.name_ja = m.waza\n" +
+    "WHERE l.id = ?\n" +
+    "ORDER BY CAST(REPLACE(m.power, '-', '0') AS INTEGER) DESC"
+  collect_champions_moves_rows(
+    db,
+    sql,
+    [pokemon_id],
+    has_heal=heal_cols != "",
+    has_field=field_cols != "",
+  )
 }
 
 ///|
+/// has_heal / has_field の意味は `collect_moves_rows` と同じ。row index 配置:
+///   - 14 列固定 + heal 8 列 (has_heal=true) + field 2 列 (has_field=true)
+///   - heal_base = 15, field_base = 23 (heal あり) / 15 (heal なし)
 fn collect_champions_moves_rows(
   db : Db,
   sql : String,
   binds : Array[String],
+  has_heal? : Bool = true,
+  has_field? : Bool = true,
 ) -> Result[Array[@model.Move], String] {
   let rows = match query(db, sql, binds) {
     Ok(r) => r
     Err(e) => return Err(e)
   }
   let moves : Array[@model.Move] = []
+  let heal_base = 15
+  let field_base = if has_heal { 23 } else { 15 }
   for i = 0; i < rows.length(); i = i + 1 {
     let r = rows[i]
     let priority = parse_int_simple(r[7])
@@ -172,6 +204,65 @@ fn collect_champions_moves_rows(
     let recoil_den = if recoil_den_raw <= 0 { 1 } else { recoil_den_raw }
     let self_ko = parse_int_simple(r[13]) != 0
     let recharge = parse_int_simple(r[14]) != 0
+    let healing = if has_heal {
+      let heal_kind = if r.length() > heal_base { r[heal_base] } else { "" }
+      let heal_num = if r.length() > heal_base + 1 {
+        parse_int_simple(r[heal_base + 1])
+      } else {
+        0
+      }
+      let heal_den = if r.length() > heal_base + 2 {
+        parse_int_simple(r[heal_base + 2])
+      } else {
+        1
+      }
+      let heal_sunny_num = if r.length() > heal_base + 3 {
+        parse_int_simple(r[heal_base + 3])
+      } else {
+        0
+      }
+      let heal_sunny_den = if r.length() > heal_base + 4 {
+        parse_int_simple(r[heal_base + 4])
+      } else {
+        1
+      }
+      let heal_harsh_num = if r.length() > heal_base + 5 {
+        parse_int_simple(r[heal_base + 5])
+      } else {
+        0
+      }
+      let heal_harsh_den = if r.length() > heal_base + 6 {
+        parse_int_simple(r[heal_base + 6])
+      } else {
+        1
+      }
+      parse_healing(
+        heal_kind, heal_num, heal_den, heal_sunny_num, heal_sunny_den, heal_harsh_num,
+        heal_harsh_den,
+      )
+    } else {
+      None
+    }
+    let weather_set = if has_heal {
+      let weather_set_str = if r.length() > heal_base + 7 {
+        r[heal_base + 7]
+      } else {
+        ""
+      }
+      parse_weather_set(weather_set_str)
+    } else {
+      None
+    }
+    let field_set = if has_field {
+      let field_set_str = if r.length() > field_base {
+        r[field_base]
+      } else {
+        ""
+      }
+      parse_field_set(field_set_str)
+    } else {
+      None
+    }
     moves.push(@model.Move::{
       name: r[0],
       type_: r[1],
@@ -187,6 +278,9 @@ fn collect_champions_moves_rows(
       recoil_den,
       self_ko,
       recharge,
+      healing,
+      weather_set,
+      field_set,
     })
   }
   Ok(moves)
@@ -200,16 +294,35 @@ pub fn query_champions_move(
   db : Db,
   move_name : String,
 ) -> Result[@model.Move, String] {
-  let sql =
-    #|SELECT m.waza, m.type, m.category, m.power, m.accuracy, m.pp,
-    #|       COALESCE(mm.priority, 0) AS priority,
-    #|       COALESCE(mm.stat_effects_json, '[]') AS stat_effects_json,
-    #|       COALESCE(mm.ailment_ja, '') AS ailment_ja,
-    #|       COALESCE(mm.ailment_chance, 100) AS ailment_chance
-    #|FROM move m
-    #|LEFT JOIN pokedex.move_meta mm ON mm.name_ja = m.waza
-    #|WHERE m.waza = ?
-    #|LIMIT 1
+  // Issue #3: ATTACH 済み `pokedex.move_meta` の列存在を PRAGMA で確認。
+  let heal_cols = if move_meta_has_heal_columns(db, "pokedex") {
+    healing_select_columns()
+  } else {
+    ""
+  }
+  // C-4 / m015: field 列も独立 PRAGMA detect。
+  let field_cols = if move_meta_has_field_columns(db, "pokedex") {
+    field_select_columns()
+  } else {
+    ""
+  }
+  let has_heal = heal_cols != ""
+  let has_field = field_cols != ""
+  let sql = "SELECT m.waza, m.type, m.category, m.power, m.accuracy, m.pp,\n" +
+    "       COALESCE(mm.priority, 0) AS priority,\n" +
+    "       COALESCE(mm.stat_effects_json, '[]') AS stat_effects_json,\n" +
+    "       COALESCE(mm.ailment_ja, '') AS ailment_ja,\n" +
+    "       COALESCE(mm.ailment_chance, 100) AS ailment_chance,\n" +
+    "       COALESCE(mm.recoil_num, 0) AS recoil_num,\n" +
+    "       COALESCE(mm.recoil_den, 1) AS recoil_den,\n" +
+    "       COALESCE(mm.self_ko, 0) AS self_ko,\n" +
+    "       COALESCE(mm.recharge, 0) AS recharge" +
+    heal_cols +
+    field_cols +
+    "\nFROM move m\n" +
+    "LEFT JOIN pokedex.move_meta mm ON mm.name_ja = m.waza\n" +
+    "WHERE m.waza = ?\n" +
+    "LIMIT 1"
   let rows = match query(db, sql, [move_name]) {
     Ok(r) => r
     Err(e) => return Err(e)
@@ -221,6 +334,76 @@ pub fn query_champions_move(
   let priority = parse_int_simple(r[6])
   let stat_effects = parse_stat_effects_json(r[7])
   let status_effect = parse_status_effect(r[8], r[9])
+  let recoil_num = if r.length() > 10 { parse_int_simple(r[10]) } else { 0 }
+  let recoil_den_raw = if r.length() > 11 { parse_int_simple(r[11]) } else { 1 }
+  let recoil_den = if recoil_den_raw <= 0 { 1 } else { recoil_den_raw }
+  let self_ko = if r.length() > 12 {
+    parse_int_simple(r[12]) != 0
+  } else {
+    false
+  }
+  let recharge = if r.length() > 13 {
+    parse_int_simple(r[13]) != 0
+  } else {
+    false
+  }
+  let heal_base = 14
+  let field_base = if has_heal { 22 } else { 14 }
+  let healing = if has_heal {
+    let heal_kind = if r.length() > heal_base { r[heal_base] } else { "" }
+    let heal_num = if r.length() > heal_base + 1 {
+      parse_int_simple(r[heal_base + 1])
+    } else {
+      0
+    }
+    let heal_den = if r.length() > heal_base + 2 {
+      parse_int_simple(r[heal_base + 2])
+    } else {
+      1
+    }
+    let heal_sunny_num = if r.length() > heal_base + 3 {
+      parse_int_simple(r[heal_base + 3])
+    } else {
+      0
+    }
+    let heal_sunny_den = if r.length() > heal_base + 4 {
+      parse_int_simple(r[heal_base + 4])
+    } else {
+      1
+    }
+    let heal_harsh_num = if r.length() > heal_base + 5 {
+      parse_int_simple(r[heal_base + 5])
+    } else {
+      0
+    }
+    let heal_harsh_den = if r.length() > heal_base + 6 {
+      parse_int_simple(r[heal_base + 6])
+    } else {
+      1
+    }
+    parse_healing(
+      heal_kind, heal_num, heal_den, heal_sunny_num, heal_sunny_den, heal_harsh_num,
+      heal_harsh_den,
+    )
+  } else {
+    None
+  }
+  let weather_set = if has_heal {
+    let weather_set_str = if r.length() > heal_base + 7 {
+      r[heal_base + 7]
+    } else {
+      ""
+    }
+    parse_weather_set(weather_set_str)
+  } else {
+    None
+  }
+  let field_set = if has_field {
+    let field_set_str = if r.length() > field_base { r[field_base] } else { "" }
+    parse_field_set(field_set_str)
+  } else {
+    None
+  }
   Ok(@model.Move::{
     name: r[0],
     type_: r[1],
@@ -232,10 +415,13 @@ pub fn query_champions_move(
     priority,
     stat_effects,
     status_effect,
-    recoil_num: 0,
-    recoil_den: 1,
-    self_ko: false,
-    recharge: false,
+    recoil_num,
+    recoil_den,
+    self_ko,
+    recharge,
+    healing,
+    weather_set,
+    field_set,
   })
 }
 

@@ -39,14 +39,14 @@ fn mk_move(
   type_ : String,
   category : @model.MoveCategory,
   power : Int,
-  priority~ : Int = 0,
-  stat_effects~ : Array[@model.StatEffect] = [],
-  status_effect~ : (@model.StatusKind, Int)? = None,
-  accuracy~ : Int = 100,
-  recoil_num~ : Int = 0,
-  recoil_den~ : Int = 1,
-  self_ko~ : Bool = false,
-  recharge~ : Bool = false,
+  priority? : Int = 0,
+  stat_effects? : Array[@model.StatEffect] = [],
+  status_effect? : (@model.StatusKind, Int)? = None,
+  accuracy? : Int = 100,
+  recoil_num? : Int = 0,
+  recoil_den? : Int = 1,
+  self_ko? : Bool = false,
+  recharge? : Bool = false,
 ) -> @model.Move {
   {
     name,
@@ -63,6 +63,9 @@ fn mk_move(
     recoil_den,
     self_ko,
     recharge,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -70,14 +73,14 @@ fn mk_move(
 fn mk_combatant(
   pokemon : @model.Pokemon,
   moves : Array[@model.Move],
-  ability~ : String = "",
-  item~ : String = "",
-  tera_type~ : String = "",
-  mega_form~ : @model.MegaForm? = None,
-  nature~ : @model.Nature? = None,
-  stat_points~ : Array[Int]? = None,
-  actual_stats~ : Array[Int]? = None,
-  ivs~ : Array[Int]? = None,
+  ability? : String = "",
+  item? : String = "",
+  tera_type? : String = "",
+  mega_form? : @model.MegaForm? = None,
+  nature? : @model.Nature? = None,
+  stat_points? : Array[Int]? = None,
+  actual_stats? : Array[Int]? = None,
+  ivs? : Array[Int]? = None,
 ) -> Combatant {
   {
     pokemon,

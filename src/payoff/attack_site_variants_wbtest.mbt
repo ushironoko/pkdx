@@ -16,8 +16,8 @@
 ///|
 fn asv_pokemon(
   name : String,
-  type1~ : String = "ノーマル",
-  spe~ : Int = 100,
+  type1? : String = "ノーマル",
+  spe? : Int = 100,
 ) -> @model.Pokemon {
   {
     global_no: "0000",
@@ -43,10 +43,10 @@ fn asv_pokemon(
 ///|
 fn asv_move(
   name : String,
-  power~ : Int = 25,
-  accuracy~ : Int = 100,
-  status_effect~ : (@model.StatusKind, Int)? = None,
-  type_~ : String = "ノーマル",
+  power? : Int = 25,
+  accuracy? : Int = 100,
+  status_effect? : (@model.StatusKind, Int)? = None,
+  type_? : String = "ノーマル",
 ) -> @model.Move {
   {
     name,
@@ -63,6 +63,9 @@ fn asv_move(
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -70,8 +73,8 @@ fn asv_move(
 fn asv_combatant(
   name : String,
   mv : @model.Move,
-  spe~ : Int = 100,
-  ability~ : String = "",
+  spe? : Int = 100,
+  ability? : String = "",
 ) -> Combatant {
   {
     pokemon: asv_pokemon(name, spe~),
@@ -109,6 +112,16 @@ fn asv_state(my_hp : Int, opp_hp : Int) -> SwitchingGameState {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
 }
@@ -144,7 +157,7 @@ fn asv_distinct_opp_hps(leaves : Array[(Double, SwitchingGameState)]) -> Int {
         break
       }
     }
-    if !(found) {
+    if !found {
       seen.push(hp)
     }
   }
@@ -162,7 +175,12 @@ test "Phase 2-E-1: Triple Axel transition → 3 distinct hit-count leaves" {
   let defender = asv_combatant("defender", mv_dfn, spe=50)
   let state = asv_state(2000, 2000)
   let leaves = transition_with_cache(
-    state, UseMove(0), UseMove(0), [attacker], [defender], new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    [attacker],
+    [defender],
+    new_damage_cache(),
   )
   // 3 hits-count variants on attacker side. 防御側は単発 (たいあたり) で
   // post-hit fanout も非分岐 (status_effect=None, contact_proc 該当なし) なので
@@ -187,7 +205,12 @@ test "Phase 2-E-2: Triple Axel + paralyze 30% → hits 別の麻痺確率" {
   let defender = asv_combatant("defender", mv_dfn, spe=50)
   let state = asv_state(2000, 2000)
   let leaves = transition_with_cache(
-    state, UseMove(0), UseMove(0), [attacker], [defender], new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    [attacker],
+    [defender],
+    new_damage_cache(),
   )
   // Triple Axel 3 variants × paralyze 2 (Yes/No) → 6 leaves on the attacker
   // side. 防御側 たいあたり は単発で post-hit 非分岐 → 各 leaf で 1 sub leaf。
@@ -249,7 +272,12 @@ test "Phase 2-E-3: PopulationBomb transition → 10 distinct hit-count leaves" {
   let defender = asv_combatant("defender", mv_dfn, spe=50)
   let state = asv_state(20000, 20000) // KO 防止のため十分大
   let leaves = transition_with_cache(
-    state, UseMove(0), UseMove(0), [attacker], [defender], new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    [attacker],
+    [defender],
+    new_damage_cache(),
   )
   // PopulationBomb 10 variants (hits=1..10) → 10 distinct opp_hps。
   assert_true(asv_distinct_opp_hps(leaves) == 10)
@@ -260,9 +288,24 @@ test "Phase 2-E-4: Σprob across all leaves within 1e-9" {
   // 各 attack site で出力 leaves の確率合計が 1.0 ± 1e-9 を保つ。
   // Triple Axel + paralyze + 通常防御技で 6 leaves、ネズミざんで 10 leaves。
   let cases : Array[(@model.Move, @model.Move, Int, Int)] = [
-    (asv_move("じしん", power=100), asv_move("たいあたり", power=10), 2000, 2000),
-    (asv_move("トリプルアクセル", power=20, accuracy=90), asv_move("たいあたり", power=10), 2000, 2000),
-    (asv_move("ネズミざん", power=20, accuracy=90), asv_move("たいあたり", power=10), 20000, 20000),
+    (
+      asv_move("じしん", power=100),
+      asv_move("たいあたり", power=10),
+      2000,
+      2000,
+    ),
+    (
+      asv_move("トリプルアクセル", power=20, accuracy=90),
+      asv_move("たいあたり", power=10),
+      2000,
+      2000,
+    ),
+    (
+      asv_move("ネズミざん", power=20, accuracy=90),
+      asv_move("たいあたり", power=10),
+      20000,
+      20000,
+    ),
   ]
   for i = 0; i < cases.length(); i = i + 1 {
     let (mv_atk, mv_dfn, my_hp, opp_hp) = cases[i]
@@ -270,7 +313,12 @@ test "Phase 2-E-4: Σprob across all leaves within 1e-9" {
     let defender = asv_combatant("defender", mv_dfn, spe=50)
     let state = asv_state(my_hp, opp_hp)
     let leaves = transition_with_cache(
-      state, UseMove(0), UseMove(0), [attacker], [defender], new_damage_cache(),
+      state,
+      UseMove(0),
+      UseMove(0),
+      [attacker],
+      [defender],
+      new_damage_cache(),
     )
     assert_true(asv_approx(asv_total_prob(leaves), 1.0, 1.0e-9))
   }
@@ -288,7 +336,12 @@ test "Phase 2-E-5: SwitchingGameState cache key shape unchanged" {
   let defender = asv_combatant("defender", mv_dfn, spe=50)
   let state = asv_state(2000, 2000)
   let leaves = transition_with_cache(
-    state, UseMove(0), UseMove(0), [attacker], [defender], new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    [attacker],
+    [defender],
+    new_damage_cache(),
   )
   // 各 leaf を HashMap に入れて Hash collision 無く 3 distinct entries あること
   let map : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])

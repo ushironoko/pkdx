@@ -13,7 +13,15 @@ fn build_dummy_team(n : Int, hp : Int) -> Array[Combatant] {
   for i in 0..<n {
     out[i] = mk_combatant(
       mk_pokemon(
-        "T" + i.to_string(), "ノーマル", "", hp, 100, 100, 100, 100, 100,
+        "T" + i.to_string(),
+        "ノーマル",
+        "",
+        hp,
+        100,
+        100,
+        100,
+        100,
+        100,
       ),
       [mk_move("mv", "ノーマル", @model.Physical, 60)],
     )
@@ -42,6 +50,16 @@ test "state_is_hashable_and_distinguishes_meaningful_fields" {
     opp_item_consumed: [false, false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false, false],
+    my_protean_locked: ["", "", ""],
+    opp_leech_seeded: [false, false, false],
+    opp_protean_locked: ["", "", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let same : SwitchingGameState = {
@@ -63,6 +81,16 @@ test "state_is_hashable_and_distinguishes_meaningful_fields" {
     opp_item_consumed: [false, false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false, false],
+    my_protean_locked: ["", "", ""],
+    opp_leech_seeded: [false, false, false],
+    opp_protean_locked: ["", "", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let diff_active = { ..base, my_active: 1 }
@@ -108,6 +136,16 @@ test "terminal_value_all_my_fainted_returns_minus_one" {
     opp_item_consumed: [false, false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false, false],
+    my_protean_locked: ["", "", ""],
+    opp_leech_seeded: [false, false, false],
+    opp_protean_locked: ["", "", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   match terminal_value(state, team_a, team_b, 5) {
@@ -139,6 +177,16 @@ test "terminal_value_all_opp_fainted_returns_plus_one" {
     opp_item_consumed: [false, false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false, false],
+    my_protean_locked: ["", "", ""],
+    opp_leech_seeded: [false, false, false],
+    opp_protean_locked: ["", "", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   match terminal_value(state, team_a, team_b, 5) {
@@ -172,6 +220,16 @@ test "terminal_value_turn_limit_reached_returns_hp_ratio_in_signed_range" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 3,
   }
   match terminal_value(state, team_a, team_b, 3) {
@@ -203,6 +261,16 @@ test "terminal_value_both_alive_before_limit_returns_none" {
     opp_item_consumed: [false, false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false, false],
+    my_protean_locked: ["", "", ""],
+    opp_leech_seeded: [false, false, false],
+    opp_protean_locked: ["", "", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   match terminal_value(state, team_a, team_b, 5) {
@@ -250,9 +318,12 @@ test "team_payoff_model_enum_exhaustive_match" {
     }
     joined = joined + labels[i]
   }
-  @debug.debug_inspect(joined, content=(
-    #|"switching_game,screened_switching_game"
-  ))
+  @debug.debug_inspect(
+    joined,
+    content=(
+      #|"switching_game,screened_switching_game"
+    ),
+  )
 }
 
 ///|
@@ -279,6 +350,16 @@ test "value_returns_terminal_value_for_terminal_state" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 5,
   }
   let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
@@ -327,6 +408,16 @@ test "value_caches_result_via_value_stats" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
@@ -358,14 +449,12 @@ test "switching_game_winrate_dominant_team_returns_positive" {
     ),
   ]
   let weak_team = [
-    mk_combatant(
-      mk_pokemon("B0", "ノーマル", "", 50, 50, 50, 50, 50, 30),
-      [mk_move("weak", "ノーマル", @model.Physical, 10)],
-    ),
-    mk_combatant(
-      mk_pokemon("B1", "ノーマル", "", 50, 50, 50, 50, 50, 30),
-      [mk_move("weak", "ノーマル", @model.Physical, 10)],
-    ),
+    mk_combatant(mk_pokemon("B0", "ノーマル", "", 50, 50, 50, 50, 50, 30), [
+      mk_move("weak", "ノーマル", @model.Physical, 10),
+    ]),
+    mk_combatant(mk_pokemon("B1", "ノーマル", "", 50, 50, 50, 50, 50, 30), [
+      mk_move("weak", "ノーマル", @model.Physical, 10),
+    ]),
   ]
   let v = switching_game_winrate(strong_team, weak_team, 2)
   assert_true(v > 0.5)
@@ -417,6 +506,16 @@ test "transition_attack_vs_attack_resolves_sequentially_by_speed" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, UseMove(0), UseMove(0), [fast], [slow])
@@ -463,6 +562,16 @@ test "transition_attack_vs_switch_damages_newly_switched_target" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, UseMove(0), Switch(1), my_team, opp_team)
@@ -514,6 +623,16 @@ test "transition_switch_vs_switch_updates_actives_only_without_damage" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, Switch(1), Switch(1), my_team, opp_team)
@@ -676,6 +795,16 @@ test "state_ranks_distinguish_otherwise_identical_states" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let boosted = { ..base, my_ranks: [2, 0, 0, 0, 0] }
@@ -699,7 +828,15 @@ test "transition_priority_move_outpaces_faster_opponent" {
   // attacker should resolve first and can KO before the fast side acts.
   let slow_prio = mk_combatant(
     mk_pokemon("SlowP", "はがね", "", 100, 250, 100, 100, 100, 50),
-    [mk_move("バレットパンチ", "はがね", @model.Physical, 250, priority=1)],
+    [
+      mk_move(
+        "バレットパンチ",
+        "はがね",
+        @model.Physical,
+        250,
+        priority=1,
+      ),
+    ],
   )
   let fast_normal = mk_combatant(
     mk_pokemon("FastN", "ノーマル", "", 1, 250, 100, 100, 100, 200),
@@ -724,11 +861,21 @@ test "transition_priority_move_outpaces_faster_opponent" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
-  let next = transition(
-    state, UseMove(0), UseMove(0), [slow_prio], [fast_normal],
-  )
+  let next = transition(state, UseMove(0), UseMove(0), [slow_prio], [
+    fast_normal,
+  ])
   // Priority KO skips the opponent's attack.
   @debug.assert_eq(next.opp_hps[0], 0)
   @debug.assert_eq(next.my_hps[0], 100)
@@ -738,7 +885,11 @@ test "transition_priority_move_outpaces_faster_opponent" {
 test "transition_sword_dance_raises_attacker_rank_by_two" {
   let me = mk_combatant(
     mk_pokemon("A", "ノーマル", "", 100, 100, 100, 100, 100, 100),
-    [mk_move("つるぎのまい", "ノーマル", @model.Status, 0, stat_effects=[@model.StatEffect::{ stat: 0, delta: 2, target: 0 }])],
+    [
+      mk_move("つるぎのまい", "ノーマル", @model.Status, 0, stat_effects=[
+        @model.StatEffect::{ stat: 0, delta: 2, target: 0 },
+      ]),
+    ],
   )
   let opp = mk_combatant(
     mk_pokemon("B", "ノーマル", "", 100, 100, 100, 100, 100, 100),
@@ -763,6 +914,16 @@ test "transition_sword_dance_raises_attacker_rank_by_two" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, UseMove(0), UseMove(0), [me], [opp])
@@ -773,7 +934,11 @@ test "transition_sword_dance_raises_attacker_rank_by_two" {
 test "transition_rank_clamps_to_plus_two_after_two_sword_dances" {
   let me = mk_combatant(
     mk_pokemon("A", "ノーマル", "", 100, 100, 100, 100, 100, 200),
-    [mk_move("つるぎのまい", "ノーマル", @model.Status, 0, stat_effects=[@model.StatEffect::{ stat: 0, delta: 2, target: 0 }])],
+    [
+      mk_move("つるぎのまい", "ノーマル", @model.Status, 0, stat_effects=[
+        @model.StatEffect::{ stat: 0, delta: 2, target: 0 },
+      ]),
+    ],
   )
   let opp = mk_combatant(
     mk_pokemon("B", "ノーマル", "", 100, 100, 100, 100, 100, 100),
@@ -798,6 +963,16 @@ test "transition_rank_clamps_to_plus_two_after_two_sword_dances" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   state = transition(state, UseMove(0), UseMove(0), [me], [opp])
@@ -848,6 +1023,16 @@ test "transition_switch_resets_active_ranks_to_zero" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, Switch(1), Switch(1), my_team, opp_team)
@@ -889,6 +1074,16 @@ test "transition_rank_affects_damage_sword_dance_increases_output" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let boosted : SwitchingGameState = { ..neutral, my_ranks: [2, 0, 0, 0, 0] }
@@ -915,7 +1110,7 @@ test "switching_game_winrate_stats_completes_and_caches" {
   let team_b = [ok, ok]
   let (v, stats, _) = switching_game_winrate_stats(team_a, team_b, 2)
   assert_true(v >= -1.0 && v <= 1.0)
-  assert_true(!(v.is_nan()))
+  assert_true(!v.is_nan())
   // The recursion must have run (at least one miss observed).
   assert_true(stats.misses >= 1)
 }
@@ -1017,9 +1212,7 @@ test "damage_cache_distinguishes_sides_for_symmetric_teams" {
   let cache = new_damage_cache()
   let ranks = [0, 0, 0, 0, 0]
   let d_mine = mean_damage_cached(cache, true, 0, ranks, 0, ranks, 0, [a], [b])
-  let d_opp = mean_damage_cached(
-    cache, false, 0, ranks, 0, ranks, 0, [a], [b],
-  )
+  let d_opp = mean_damage_cached(cache, false, 0, ranks, 0, ranks, 0, [a], [b])
   // Both entries are fresh misses, not collisions.
   @debug.assert_eq(cache.misses, 2)
   @debug.assert_eq(cache.hits, 0)
@@ -1033,15 +1226,15 @@ test "damage_cache_distinguishes_sides_for_symmetric_teams" {
 /// base values unless overridden, so a test can change only the fields it
 /// cares about (e.g. `mk_mega_form(atk=200)` for a pure attack boost).
 fn mk_mega_form(
-  atk~ : Int = 100,
-  def_~ : Int = 100,
-  spa~ : Int = 100,
-  spd~ : Int = 100,
-  spe~ : Int = 100,
-  type1~ : String = "ノーマル",
-  type2~ : String = "",
-  ability~ : String = "",
-  name_ja~ : String = "メガテスト",
+  atk? : Int = 100,
+  def_? : Int = 100,
+  spa? : Int = 100,
+  spd? : Int = 100,
+  spe? : Int = 100,
+  type1? : String = "ノーマル",
+  type2? : String = "",
+  ability? : String = "",
+  name_ja? : String = "メガテスト",
 ) -> @model.MegaForm {
   { atk, def_, spa, spd, spe, type1, type2, ability, name_ja }
 }
@@ -1050,12 +1243,12 @@ fn mk_mega_form(
 /// Helper: baseline single-Pokemon state with all mega fields zeroed. Used to
 /// keep mega-specific tests focused on the field under test.
 fn mk_mega_state_1v1(
-  my_hp~ : Int = 100,
-  opp_hp~ : Int = 100,
-  my_mega_used~ : Bool = false,
-  opp_mega_used~ : Bool = false,
-  my_megaed~ : Bool = false,
-  opp_megaed~ : Bool = false,
+  my_hp? : Int = 100,
+  opp_hp? : Int = 100,
+  my_mega_used? : Bool = false,
+  opp_mega_used? : Bool = false,
+  my_megaed? : Bool = false,
+  opp_megaed? : Bool = false,
 ) -> SwitchingGameState {
   {
     my_active: 0,
@@ -1076,6 +1269,16 @@ fn mk_mega_state_1v1(
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
 }
@@ -1205,10 +1408,9 @@ test "transition_mega_vs_move_uses_mega_stats_for_damage" {
     [mk_move("のしかかり", "ノーマル", @model.Physical, 85)],
     mega_form=Some(mk_mega_form(atk=200)),
   )
-  let plain_attacker = mk_combatant(
-    base,
-    [mk_move("のしかかり", "ノーマル", @model.Physical, 85)],
-  )
+  let plain_attacker = mk_combatant(base, [
+    mk_move("のしかかり", "ノーマル", @model.Physical, 85),
+  ])
   let opp = mk_combatant(
     mk_pokemon("B", "ノーマル", "", 500, 100, 100, 100, 100, 50),
     [mk_move("idle", "ノーマル", @model.Status, 0)],
@@ -1216,7 +1418,11 @@ test "transition_mega_vs_move_uses_mega_stats_for_damage" {
   let state = mk_mega_state_1v1(my_hp=100, opp_hp=500)
   let after_mega = transition(state, Mega(0), UseMove(0), [mega_attacker], [opp])
   let after_plain = transition(
-    state, UseMove(0), UseMove(0), [plain_attacker], [opp],
+    state,
+    UseMove(0),
+    UseMove(0),
+    [plain_attacker],
+    [opp],
   )
   let dmg_mega = 500 - after_mega.opp_hps[0]
   let dmg_plain = 500 - after_plain.opp_hps[0]
@@ -1233,10 +1439,9 @@ test "transition_mega_vs_move_uses_mega_type_for_stab" {
     [mk_move("じしん", "じめん", @model.Physical, 100)],
     mega_form=Some(mk_mega_form(type1="ドラゴン", type2="じめん")),
   )
-  let plain_attacker = mk_combatant(
-    base,
-    [mk_move("じしん", "じめん", @model.Physical, 100)],
-  )
+  let plain_attacker = mk_combatant(base, [
+    mk_move("じしん", "じめん", @model.Physical, 100),
+  ])
   // Neutral defender so type matchup does not confound the STAB comparison.
   let opp = mk_combatant(
     mk_pokemon("B", "ノーマル", "", 500, 100, 100, 100, 100, 50),
@@ -1245,7 +1450,11 @@ test "transition_mega_vs_move_uses_mega_type_for_stab" {
   let state = mk_mega_state_1v1(my_hp=100, opp_hp=500)
   let after_mega = transition(state, Mega(0), UseMove(0), [mega_attacker], [opp])
   let after_plain = transition(
-    state, UseMove(0), UseMove(0), [plain_attacker], [opp],
+    state,
+    UseMove(0),
+    UseMove(0),
+    [plain_attacker],
+    [opp],
   )
   let dmg_mega = 500 - after_mega.opp_hps[0]
   let dmg_plain = 500 - after_plain.opp_hps[0]
@@ -1289,6 +1498,16 @@ test "transition_mega_vs_switch_damages_newly_switched_target" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let next = transition(state, Mega(0), Switch(1), [me], opp_team)
@@ -1358,6 +1577,16 @@ test "mega_persists_after_switch_out_and_back_in" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   // Turn 1: mega slot 0.
@@ -1365,14 +1594,22 @@ test "mega_persists_after_switch_out_and_back_in" {
   @debug.assert_eq(after_mega.my_megaed[0], true)
   // Turn 2: switch to slot 1.
   let after_switch_out = transition(
-    after_mega, Switch(1), UseMove(0), [me_0, me_1], [opp],
+    after_mega,
+    Switch(1),
+    UseMove(0),
+    [me_0, me_1],
+    [opp],
   )
   @debug.assert_eq(after_switch_out.my_active, 1)
   // Slot 0's mega flag must still be set.
   @debug.assert_eq(after_switch_out.my_megaed[0], true)
   // Turn 3: switch back to slot 0.
   let after_switch_back = transition(
-    after_switch_out, Switch(0), UseMove(0), [me_0, me_1], [opp],
+    after_switch_out,
+    Switch(0),
+    UseMove(0),
+    [me_0, me_1],
+    [opp],
   )
   @debug.assert_eq(after_switch_back.my_active, 0)
   @debug.assert_eq(after_switch_back.my_megaed[0], true)
@@ -1440,20 +1677,47 @@ test "damage_cache_distinguishes_mega_vs_base" {
   let cache = new_damage_cache()
   let ranks = [0, 0, 0, 0, 0]
   let d_base = mean_damage_cached(
-    cache, true, 0, ranks, 0, ranks, 0, [a], [b],
-    atk_mega=false, def_mega=false,
+    cache,
+    true,
+    0,
+    ranks,
+    0,
+    ranks,
+    0,
+    [a],
+    [b],
+    atk_mega=false,
+    def_mega=false,
   )
   let d_mega = mean_damage_cached(
-    cache, true, 0, ranks, 0, ranks, 0, [a], [b],
-    atk_mega=true, def_mega=false,
+    cache,
+    true,
+    0,
+    ranks,
+    0,
+    ranks,
+    0,
+    [a],
+    [b],
+    atk_mega=true,
+    def_mega=false,
   )
   @debug.assert_eq(cache.misses, 2)
   @debug.assert_eq(cache.hits, 0)
   assert_true(d_mega > d_base)
   // Hit on repeated lookup confirms the cache reuses the new mega key.
   let d_mega_again = mean_damage_cached(
-    cache, true, 0, ranks, 0, ranks, 0, [a], [b],
-    atk_mega=true, def_mega=false,
+    cache,
+    true,
+    0,
+    ranks,
+    0,
+    ranks,
+    0,
+    [a],
+    [b],
+    atk_mega=true,
+    def_mega=false,
   )
   @debug.assert_eq(d_mega_again, d_mega)
   @debug.assert_eq(cache.hits, 1)
@@ -1490,10 +1754,16 @@ fn value_no_prune(
     None => stats.misses = stats.misses + 1
   }
   let actions_me = alive_actions(
-    state.my_active, state.my_hps, my_team, state.my_mega_used,
+    state.my_active,
+    state.my_hps,
+    my_team,
+    state.my_mega_used,
   )
   let actions_opp = alive_actions(
-    state.opp_active, state.opp_hps, opp_team, state.opp_mega_used,
+    state.opp_active,
+    state.opp_hps,
+    opp_team,
+    state.opp_mega_used,
   )
   if actions_me.length() == 0 {
     return -1.0
@@ -1508,7 +1778,12 @@ fn value_no_prune(
   for i in 0..<actions_me.length() {
     for j in 0..<actions_opp.length() {
       let outcomes = transition_with_cache(
-        state, actions_me[i], actions_opp[j], my_team, opp_team, dmg_cache,
+        state,
+        actions_me[i],
+        actions_opp[j],
+        my_team,
+        opp_team,
+        dmg_cache,
       )
       let mut ev = 0.0
       for outcome in outcomes {
@@ -1525,9 +1800,7 @@ fn value_no_prune(
     Ok(x) => x
     Err(_) => return 0.0
   }
-  let lp = try @nash.solve_zero_sum(m) catch {
-    _ => return 0.0
-  }
+  let lp = @nash.solve_zero_sum(m) catch { _ => return 0.0 }
   let result = match lp {
     Optimal(value~, ..) => value
     _ => 0.0
@@ -1572,6 +1845,16 @@ fn switching_game_winrate_no_prune(
     opp_item_consumed: Array::make(opp_team.length(), false),
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: Array::make(my_team.length(), false),
+    my_protean_locked: Array::make(my_team.length(), ""),
+    opp_leech_seeded: Array::make(opp_team.length(), false),
+    opp_protean_locked: Array::make(opp_team.length(), ""),
+    my_wish_turns: no_wish_pending(my_team.length()),
+    opp_wish_turns: no_wish_pending(opp_team.length()),
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
@@ -1651,10 +1934,14 @@ test "alpha_beta_reduces_or_matches_miss_count" {
     [mk_move("weak", "ノーマル", @model.Physical, 10)],
   )
   let (_, stats_prune, _) = switching_game_winrate_stats(
-    [strong, strong], [weak, weak], 1,
+    [strong, strong],
+    [weak, weak],
+    1,
   )
   let (_, stats_no_prune) = switching_game_winrate_no_prune(
-    [strong, strong], [weak, weak], 1,
+    [strong, strong],
+    [weak, weak],
+    1,
   )
   assert_true(stats_prune.misses <= stats_no_prune.misses)
 }
@@ -1684,6 +1971,16 @@ test "value_accepts_explicit_alpha_beta_and_matches_default" {
     opp_item_consumed: [false, false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let cache1 : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
@@ -1693,9 +1990,7 @@ test "value_accepts_explicit_alpha_beta_and_matches_default" {
   let s1 = new_stats()
   let s2 = new_stats()
   let v1 = value(state, team, team, 2, cache1, s1, dmg1)
-  let v2 = value(
-    state, team, team, 2, cache2, s2, dmg2, alpha=-1.0, beta=1.0,
-  )
+  let v2 = value(state, team, team, 2, cache2, s2, dmg2, alpha=-1.0, beta=1.0)
   assert_true((v1 - v2).abs() < 1.0e-12)
 }
 
@@ -1725,8 +2020,8 @@ test "switching_game_turn_limit_3_produces_finite_value_on_multi_pokemon_team" {
   )
   let v = switching_game_winrate([a0, a1], [b0, b1], 2)
   assert_true(v >= -1.0 && v <= 1.0)
-  assert_true(!(v.is_nan()))
-  assert_true(!(v.is_inf()))
+  assert_true(!v.is_nan())
+  assert_true(!v.is_inf())
 }
 
 ///|
@@ -1753,11 +2048,15 @@ test "state_space_2v2_default_turn_limit_bounded" {
     [mk_move("tackle", "ノーマル", @model.Physical, 30)],
   )
   let (v, stats, dmg) = switching_game_winrate_stats(
-    [a0, a1], [b0, b1], @payoff.DP_TURN_LIMIT,
+    [a0, a1],
+    [b0, b1],
+    @payoff.DP_TURN_LIMIT,
   )
-  println("2v2 tl=\{@payoff.DP_TURN_LIMIT}: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}, dmg_misses=\{dmg.misses}")
+  println(
+    "2v2 tl=\{@payoff.DP_TURN_LIMIT}: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}, dmg_misses=\{dmg.misses}",
+  )
   assert_true(v >= -1.0 && v <= 1.0)
-  assert_true(!(v.is_nan()))
+  assert_true(!v.is_nan())
   assert_true(stats.cached_states > 0)
   assert_true(stats.cached_states < 500000)
   assert_true(dmg.misses < 200)
@@ -1767,11 +2066,16 @@ test "state_space_2v2_default_turn_limit_bounded" {
 test "state_space_3v3_turn_limit_5_bounded" {
   // 3v3 with diverse types and moderate HP. turn_limit=5 is used instead of 20
   // to keep CI runtime reasonable; the 2v2 test above covers turn_limit=20.
-  let mk = fn(name : String, t1 : String, hp : Int, atk : Int, spe : Int) -> Combatant {
-    mk_combatant(
-      mk_pokemon(name, t1, "", hp, atk, 100, atk, 100, spe),
-      [mk_move("m", t1, @model.Physical, 30)],
-    )
+  let mk = fn(
+    name : String,
+    t1 : String,
+    hp : Int,
+    atk : Int,
+    spe : Int,
+  ) -> Combatant {
+    mk_combatant(mk_pokemon(name, t1, "", hp, atk, 100, atk, 100, spe), [
+      mk_move("m", t1, @model.Physical, 30),
+    ])
   }
   let team_a = [
     mk("A0", "ほのお", 150, 100, 120),
@@ -1784,9 +2088,11 @@ test "state_space_3v3_turn_limit_5_bounded" {
     mk("B2", "ノーマル", 150, 100, 105),
   ]
   let (v, stats, _) = switching_game_winrate_stats(team_a, team_b, 5)
-  println("3v3 tl=5: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}")
+  println(
+    "3v3 tl=5: value=\{v}, cached_states=\{stats.cached_states}, hits=\{stats.hits}, misses=\{stats.misses}",
+  )
   assert_true(v >= -1.0 && v <= 1.0)
-  assert_true(!(v.is_nan()))
+  assert_true(!v.is_nan())
   assert_true(stats.cached_states > 0)
   assert_true(stats.cached_states < 500000)
 }
@@ -1799,10 +2105,9 @@ test "Amaeru lowers opp Atk -2 this turn, slower physical damage reduced" {
   let fast = mk_combatant(
     mk_pokemon("A", "フェアリー", "", 200, 120, 100, 100, 100, 200),
     [
-      mk_move(
-        "amaeru", "フェアリー", @model.Status, 0,
-        stat_effects=[@model.StatEffect::{ stat: 0, delta: -2, target: 1 }],
-      ),
+      mk_move("amaeru", "フェアリー", @model.Status, 0, stat_effects=[
+        @model.StatEffect::{ stat: 0, delta: -2, target: 1 },
+      ]),
       mk_move("filler", "ノーマル", @model.Status, 0),
     ],
   )
@@ -1829,6 +2134,16 @@ test "Amaeru lowers opp Atk -2 this turn, slower physical damage reduced" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let ns_amaeru = transition(state, UseMove(0), UseMove(0), [fast], [slow])
@@ -1847,7 +2162,16 @@ test "Amaeru lowers opp Atk -2 this turn, slower physical damage reduced" {
 test "recoil 1/2 subtracts half of damage from attacker HP" {
   let attacker = mk_combatant(
     mk_pokemon("A", "いわ", "", 200, 180, 100, 100, 100, 120),
-    [mk_move("head_smash", "いわ", @model.Physical, 150, recoil_num=1, recoil_den=2)],
+    [
+      mk_move(
+        "head_smash",
+        "いわ",
+        @model.Physical,
+        150,
+        recoil_num=1,
+        recoil_den=2,
+      ),
+    ],
   )
   let defender = mk_combatant(
     mk_pokemon("B", "ノーマル", "", 200, 100, 100, 100, 100, 60),
@@ -1872,6 +2196,16 @@ test "recoil 1/2 subtracts half of damage from attacker HP" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let ns = transition(state, UseMove(0), UseMove(0), [attacker], [defender])
@@ -1918,6 +2252,16 @@ test "self_ko zeroes attacker HP even when hitting Ghost (dmg=0)" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let ns = transition(state, UseMove(0), UseMove(0), [attacker], [ghost])
@@ -1960,10 +2304,25 @@ test "recharge move forces attacker skip on the turn after the hit lands" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let outs1 = attempt_turn_with_cache(
-    s0, UseMove(0), UseMove(0), [me], [opp], new_damage_cache(),
+    s0,
+    UseMove(0),
+    UseMove(0),
+    [me],
+    [opp],
+    new_damage_cache(),
   )
   @debug.assert_eq(outs1.length(), 1)
   let (_, s1) = outs1[0]
@@ -1975,7 +2334,12 @@ test "recharge move forces attacker skip on the turn after the hit lands" {
   @debug.assert_eq(s1.my_must_recharge[0], true)
   let hp_before_turn2 = s1.opp_hps[0]
   let outs2 = attempt_turn_with_cache(
-    s1, UseMove(0), UseMove(0), [me], [opp], new_damage_cache(),
+    s1,
+    UseMove(0),
+    UseMove(0),
+    [me],
+    [opp],
+    new_damage_cache(),
   )
   @debug.assert_eq(outs2.length(), 1)
   let (_, s2) = outs2[0]
@@ -2019,10 +2383,25 @@ test "must_recharge forces attacker UseMove to skip and clears after one turn" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let outs = attempt_turn_with_cache(
-    state, UseMove(0), UseMove(0), [me], [opp], new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    [me],
+    [opp],
+    new_damage_cache(),
   )
   // Deterministic: no accuracy/status fan-out from either side.
   @debug.assert_eq(outs.length(), 1)

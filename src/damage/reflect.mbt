@@ -117,7 +117,9 @@ pub fn calc_reflect_damage(
   let target_base_hp = if input.defender.hp > 0 { input.defender.hp } else { 1 }
   let target_hp = if input.stat_system == @model.Champions {
     calc_def_stat_champions(
-      target_base_hp, is_hp=true, custom=input.def_hp_override,
+      target_base_hp,
+      is_hp=true,
+      custom=input.def_hp_override,
     )
   } else {
     calc_def_stat(target_base_hp, is_hp=true, custom=input.def_hp_override)
@@ -176,6 +178,7 @@ pub fn calc_reflect_damage(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    protean_consumed: false,
     incoming: None,
   }
   let step1 = calc_damage(step1_input)
@@ -216,8 +219,7 @@ pub fn calc_reflect_damage(
   }
   let percents : FixedArray[Double] = FixedArray::make(16, 0.0)
   for i = 0; i < 16; i = i + 1 {
-    percents[i] = reflect_damages[i].to_double() / target_hp.to_double() *
-      100.0
+    percents[i] = reflect_damages[i].to_double() / target_hp.to_double() * 100.0
   }
   let min_dmg = reflect_damages[0]
   let max_dmg = reflect_damages[15]

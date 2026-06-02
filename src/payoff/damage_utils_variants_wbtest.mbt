@@ -45,6 +45,9 @@ fn dvt_move(name : String) -> @model.Move {
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -53,7 +56,7 @@ fn dvt_input(
   attacker : @model.Pokemon,
   defender : @model.Pokemon,
   move_ : @model.Move,
-  atk_ability~ : String = "",
+  atk_ability? : String = "",
 ) -> @model.DamageCalcInput {
   {
     attacker,
@@ -88,6 +91,7 @@ fn dvt_input(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    protean_consumed: false,
     incoming: None,
   }
 }
@@ -171,7 +175,9 @@ test "expected_damage: Skill Link + 2-5 hit collapses to single variant" {
   let atk = dvt_pokemon("attacker")
   let dfn = dvt_pokemon("defender")
   let mv = dvt_move("みだれづき")
-  let r = @damage.calc_damage(dvt_input(atk, dfn, mv, atk_ability="スキルリンク"))
+  let r = @damage.calc_damage(
+    dvt_input(atk, dfn, mv, atk_ability="スキルリンク"),
+  )
   let pairs = expected_damage_variants(r)
   @debug.debug_inspect(pairs.length(), content="1")
   let drift = if pairs[0].0 > 1.0 { pairs[0].0 - 1.0 } else { 1.0 - pairs[0].0 }

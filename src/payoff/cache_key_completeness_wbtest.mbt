@@ -55,11 +55,17 @@ fn ck_move(name : String) -> @model.Move {
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
 ///|
-fn ck_combatant(pokemon : @model.Pokemon, moves : Array[@model.Move]) -> Combatant {
+fn ck_combatant(
+  pokemon : @model.Pokemon,
+  moves : Array[@model.Move],
+) -> Combatant {
   {
     pokemon,
     moves,
@@ -107,10 +113,22 @@ fn key_of(
   atk : Combatant,
   dfn : Combatant,
   mv : @model.Move,
-  atk_rank~ : Int = 0,
-  def_rank~ : Int = 0,
+  atk_rank? : Int = 0,
+  def_rank? : Int = 0,
+  weather? : @model.Weather = @model.Weather::None,
+  atk_protean_locked? : String = "",
+  def_protean_locked? : String = "",
 ) -> String raise {
-  let input = combatant_to_cache_key_input(atk, dfn, mv, atk_rank, def_rank)
+  let input = combatant_to_cache_key_input(
+    atk,
+    dfn,
+    mv,
+    atk_rank,
+    def_rank,
+    weather~,
+    atk_protean_locked~,
+    def_protean_locked~,
+  )
   guard @damage_cache.build_cache_key(input) is Ok(k) else {
     fail("build_cache_key failed")
   }
@@ -281,4 +299,276 @@ test "cache key: two identical matchup calls produce identical keys" {
   let b = base_def()
   let mv = base_move()
   @debug.assert_eq(key_of(a, b, mv), key_of(a, b, mv))
+}
+
+///|
+/// Stage B-3: weather distinguishes the L2 cache key. Each Weather variant
+/// must map to a distinct CLI-shaped string so disk entries written by
+/// `pkdx damage --weather はれ` and by the payoff layer's Sun branch share
+/// identity, and so Weather::None / Sun / Rain / Sand / Snow can coexist in
+/// the SQLite cache for one matchup. Pairs `Weather::None` against each
+/// active weather so a regression that collapses one variant back to "" is
+/// caught directly.
+test "cache key: weather variants each distinguish the key (B-3)" {
+  let a = base_atk()
+  let b = base_def()
+  let mv = base_move()
+  let k_none = key_of(a, b, mv, weather=@model.Weather::None)
+  let k_sun = key_of(a, b, mv, weather=@model.Weather::Sun)
+  let k_rain = key_of(a, b, mv, weather=@model.Weather::Rain)
+  let k_sand = key_of(a, b, mv, weather=@model.Weather::Sand)
+  let k_snow = key_of(a, b, mv, weather=@model.Weather::Snow)
+  assert_true(k_none != k_sun)
+  assert_true(k_none != k_rain)
+  assert_true(k_none != k_sand)
+  assert_true(k_none != k_snow)
+  // Pairwise distinctness across active weathers — guards against two
+  // labels collapsing to the same string (e.g. typo'd "はれ" / "あめ").
+  assert_true(k_sun != k_rain)
+  assert_true(k_sun != k_sand)
+  assert_true(k_sun != k_snow)
+  assert_true(k_rain != k_sand)
+  assert_true(k_rain != k_snow)
+  assert_true(k_sand != k_snow)
+}
+
+///|
+/// Stage 6 (protean-libero): attacker の Protean/Libero ロックタイプは
+/// `effective_combatant` が type1/type2 を override しダメージを変えるが、
+/// name_ja は不変なので attacker トークンだけでは衝突する。未ロック ("") と
+/// ほのおロックで L2 key が分離することを pin する。
+test "cache key: attacker protean lock distinguishes the key" {
+  let a = base_atk()
+  let b = base_def()
+  let mv = base_move()
+  assert_true(
+    key_of(a, b, mv, atk_protean_locked="") !=
+    key_of(a, b, mv, atk_protean_locked="ほのお"),
+  )
+}
+
+///|
+/// 異なるロックタイプ同士 (ほのお vs みず) も別キーへ分離する — 1 つのトークンへ
+/// 全ロックが畳まれる regression を直接捕捉する。
+test "cache key: distinct attacker locked types distinguish the key" {
+  let a = base_atk()
+  let b = base_def()
+  let mv = base_move()
+  assert_true(
+    key_of(a, b, mv, atk_protean_locked="ほのお") !=
+    key_of(a, b, mv, atk_protean_locked="みず"),
+  )
+}
+
+///|
+/// defender 側ロックも独立して key を分ける (両側トークンが同じ segment に
+/// 縮退していないことの担保)。
+test "cache key: defender protean lock distinguishes the key" {
+  let a = base_atk()
+  let b = base_def()
+  let mv = base_move()
+  assert_true(
+    key_of(a, b, mv, def_protean_locked="") !=
+    key_of(a, b, mv, def_protean_locked="ほのお"),
+  )
+}
+
+// ─── SwitchingGameState Hash 完全性 (stage 2: healing infra) ──────────────────
+//
+// Plan K-4: each new state field added in stage 2 (weather / weather_turns_left
+// / my_leech_seeded / opp_leech_seeded / my_wish_turns / opp_wish_turns) must
+// be part of the derive(Hash) so the DP memoisation cache does not collide
+// two distinct states that only differ on a healing-infrastructure field.
+//
+// Strategy: build a baseline state, then perturb exactly one new field at a
+// time. The two states must compare !=, hash to distinct buckets when used
+// as @hashmap keys, AND the spread-update path must propagate the change
+// (so a `{ ..base, ... }` modification cannot silently drop the new fields).
+
+///|
+fn ck_state_base() -> SwitchingGameState {
+  {
+    my_active: 0,
+    opp_active: 0,
+    my_hps: [100, 100],
+    opp_hps: [100, 100],
+    my_ranks: [0, 0, 0, 0, 0],
+    opp_ranks: [0, 0, 0, 0, 0],
+    my_mega_used: false,
+    opp_mega_used: false,
+    my_megaed: [false, false],
+    opp_megaed: [false, false],
+    my_status: [@model.None, @model.None],
+    opp_status: [@model.None, @model.None],
+    my_must_recharge: [false, false],
+    opp_must_recharge: [false, false],
+    my_item_consumed: [false, false],
+    opp_item_consumed: [false, false],
+    my_moves_used: [],
+    opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false, false],
+    opp_protean_locked: ["", ""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
+    turn: 0,
+  }
+}
+
+///|
+/// Probe (a, b) with both `Eq` and HashMap-keyed retrieval: stores `a`'s value
+/// and asserts that `b` does NOT collide with it. Confirms `b` hashes to a
+/// distinct bucket AND compares not-equal to `a` — the two prerequisites a
+/// state cache key needs to keep two distinct states apart.
+fn assert_distinct_state_keys(
+  a : SwitchingGameState,
+  b : SwitchingGameState,
+) -> Unit raise {
+  assert_true(a != b)
+  let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
+  cache[a] = 1.0
+  match cache.get(b) {
+    Some(_) => assert_true(false)
+    None => ()
+  }
+}
+
+///|
+test "state cache key: weather field distinguishes the key" {
+  let base = ck_state_base()
+  let with_sun = { ..base, weather: @model.Weather::Sun }
+  assert_distinct_state_keys(base, with_sun)
+}
+
+///|
+test "state cache key: weather_turns_left distinguishes the key" {
+  let base = ck_state_base()
+  let with_turns = { ..base, weather_turns_left: 5 }
+  assert_distinct_state_keys(base, with_turns)
+}
+
+///|
+test "state cache key: my_leech_seeded distinguishes the key" {
+  let base = ck_state_base()
+  let seeded = { ..base, my_leech_seeded: [true, false] }
+  assert_distinct_state_keys(base, seeded)
+}
+
+///|
+test "state cache key: opp_leech_seeded distinguishes the key" {
+  let base = ck_state_base()
+  let seeded = { ..base, opp_leech_seeded: [false, true] }
+  assert_distinct_state_keys(base, seeded)
+}
+
+///|
+test "state hash: protean lock distinguishes states" {
+  let base = ck_state_base()
+  let locked = { ..base, my_protean_locked: ["ほのお", ""] }
+  assert_distinct_state_keys(base, locked)
+}
+
+///|
+test "state hash: empty protean lock is a no-op" {
+  // 2 つの base state（両側 protean_locked が all-""）は完全に等しい =
+  // 空既定が key/Hash/Eq に対して no-op であることを pin する。
+  let a = ck_state_base()
+  let b = ck_state_base()
+  assert_true(a == b)
+  let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
+  cache[a] = 1.0
+  match cache.get(b) {
+    Some(v) => assert_true(v == 1.0)
+    None => assert_true(false)
+  }
+}
+
+///|
+test "state cache key: my_wish_turns distinguishes the key" {
+  let base = ck_state_base()
+  let wished = { ..base, my_wish_turns: 2 }
+  assert_distinct_state_keys(base, wished)
+}
+
+///|
+test "state cache key: opp_wish_turns distinguishes the key" {
+  let base = ck_state_base()
+  let wished = { ..base, opp_wish_turns: 0 }
+  assert_distinct_state_keys(base, wished)
+}
+
+///|
+/// All-equal sanity: untouched copy of the base state must compare equal and
+/// collide on the HashMap. Catches accidental Hash regressions on the new
+/// fields that would silently fail every other assertion above.
+test "state cache key: identical states with all new fields collide" {
+  let a = ck_state_base()
+  let b = ck_state_base()
+  @debug.assert_eq(a, b)
+  let cache : @hashmap.HashMap[SwitchingGameState, Double] = @hashmap.HashMap([])
+  cache[a] = 0.42
+  match cache.get(b) {
+    Some(v) => @debug.assert_eq(v, 0.42)
+    None => assert_true(false)
+  }
+}
+
+// ─── SwitchingGameState Hash 完全性 (stage D: field infra) ────────────────────
+//
+// Stage D-1: state.field / state.field_turns_left は derive(Hash) に含まれ、
+// 同じ matchup でも field が異なれば別の DP cache entry に分離される必要が
+// ある。Stage E で field-setting moves が state を書き換える前提として、まず
+// state hash が field を区別できることを担保する。
+
+///|
+test "state cache key: field variant distinguishes the key" {
+  let base = ck_state_base()
+  let with_electric = { ..base, field: @model.Field::Electric }
+  assert_distinct_state_keys(base, with_electric)
+}
+
+///|
+test "state cache key: field_turns_left distinguishes the key" {
+  let base = ck_state_base()
+  let with_turns = { ..base, field_turns_left: 3 }
+  assert_distinct_state_keys(base, with_turns)
+}
+
+///|
+/// Pairwise distinctness across all active field variants — guards against two
+/// variants collapsing to the same hash bucket (e.g. derive(Hash) regression
+/// that only encodes the discriminant index incorrectly).
+test "state cache key: field variants pairwise distinct" {
+  let base = ck_state_base()
+  let electric = { ..base, field: @model.Field::Electric }
+  let grassy = { ..base, field: @model.Field::Grassy }
+  let misty = { ..base, field: @model.Field::Misty }
+  let psychic = { ..base, field: @model.Field::Psychic }
+  assert_distinct_state_keys(electric, grassy)
+  assert_distinct_state_keys(electric, misty)
+  assert_distinct_state_keys(electric, psychic)
+  assert_distinct_state_keys(grassy, misty)
+  assert_distinct_state_keys(grassy, psychic)
+  assert_distinct_state_keys(misty, psychic)
+}
+
+///|
+/// Cross-axis distinctness: weather と field の両方が変化していても hash が
+/// 分離されることを確認。derive(Hash) は構造体全体のフィールドを混ぜるので
+/// 単独テストが通れば自動的に通るはずだが、(weather, field) のいずれかが
+/// 同じ bucket に集約される regression を早期に検出するために pin する。
+test "state cache key: weather + field both differ distinguishes the key" {
+  let base = ck_state_base()
+  let a = {
+    ..base,
+    weather: @model.Weather::Sun,
+    field: @model.Field::Electric,
+  }
+  let b = { ..base, weather: @model.Weather::Rain, field: @model.Field::Grassy }
+  assert_distinct_state_keys(a, b)
 }

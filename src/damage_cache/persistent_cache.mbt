@@ -18,7 +18,17 @@
 /// 性格 / ランク / 天候 / 各種フラグ) — LLM が damages/percents 単独で
 /// 推論を誤らないよう echo back する。v3 cache entries はこの field を
 /// 欠くため一括で再生成する。
-pub const SCHEMA_VERSION : Int = 4
+///
+/// v5: へんげんじざい / リベロ の "発動済み" 状態を表す `protean_consumed`
+/// フラグを input echo に追加。boosted / unboosted の 2 ケースで JSON が
+/// 異なるため、この field を欠く v4 entries は再生成する。
+///
+/// v6: Protean/Libero ロックタイプ (atk_protean_locked / def_protean_locked) を
+/// cache key 末尾へ追加。同一種族・同一技でも未ロック / ほのおロック / みず
+/// ロックでダメージが変わる (effective_combatant が type を override)。key
+/// 末尾へ要素を増やすと空値でも全 key 文字列が変わる (trailing `|`) ため、
+/// 旧 v5 entries との混在を避ける一括 invalidate が必要。
+pub const SCHEMA_VERSION : Int = 6
 
 ///|
 const META_KEY_SCHEMA : String = "schema_version"
@@ -59,11 +69,9 @@ fn init_schema(cache_db : @db.Db) -> Result[Unit, String] {
 /// Read a single meta row, returning `None` when the key is absent.
 fn read_meta(cache_db : @db.Db, k : String) -> Result[String?, String] {
   match
-    @db.query_binds(
-      cache_db,
-      "SELECT v FROM damage_cache_meta WHERE k = ?",
-      [@db.BindText(k)],
-    ) {
+    @db.query_binds(cache_db, "SELECT v FROM damage_cache_meta WHERE k = ?", [
+      @db.BindText(k),
+    ]) {
     Err(e) => Err(e)
     Ok(rows) =>
       if rows.length() == 0 {
@@ -153,7 +161,7 @@ fn try_open_and_init(
               @db.close(cache_db)
               Err(e)
             }
-            Ok(_) => Ok({ db: cache_db, path, })
+            Ok(_) => Ok({ db: cache_db, path })
           }
       }
   }
@@ -208,12 +216,7 @@ pub fn get(cache : DamageDiskCache, key : String) -> String? {
       [@db.BindText(key)],
     ) {
     Err(_) => None
-    Ok(rows) =>
-      if rows.length() == 0 {
-        None
-      } else {
-        rows[0][0]
-      }
+    Ok(rows) => if rows.length() == 0 { None } else { rows[0][0] }
   }
 }
 

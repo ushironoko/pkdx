@@ -27,11 +27,7 @@ fn pb_pokemon(name : String, type1 : String) -> @model.Pokemon {
 }
 
 ///|
-fn pb_move(
-  name : String,
-  type_ : String,
-  power : Int,
-) -> @model.Move {
+fn pb_move(name : String, type_ : String, power : Int) -> @model.Move {
   {
     name,
     type_,
@@ -47,6 +43,9 @@ fn pb_move(
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -58,8 +57,8 @@ fn pb_input(
   atk : @model.Pokemon,
   dfn : @model.Pokemon,
   mv : @model.Move,
-  atk_ability~ : String = "",
-  multi_hit_mode~ : @model.MultiHit = @model.MultiHit::Auto,
+  atk_ability? : String = "",
+  multi_hit_mode? : @model.MultiHit = @model.MultiHit::Auto,
 ) -> @model.DamageCalcInput {
   {
     attacker: atk,
@@ -94,6 +93,7 @@ fn pb_input(
     def_item_removable: false,
     multi_hit_mode,
     disguise_active: false,
+    protean_consumed: false,
     incoming: None,
   }
 }

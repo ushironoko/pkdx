@@ -12,14 +12,14 @@ fn mk_move(
   type_ : String,
   category : @model.MoveCategory,
   power : Int,
-  priority~ : Int = 0,
-  stat_effects~ : Array[@model.StatEffect] = [],
-  status_effect~ : (@model.StatusKind, Int)? = None,
-  accuracy~ : Int = 100,
-  recoil_num~ : Int = 0,
-  recoil_den~ : Int = 1,
-  self_ko~ : Bool = false,
-  recharge~ : Bool = false,
+  priority? : Int = 0,
+  stat_effects? : Array[@model.StatEffect] = [],
+  status_effect? : (@model.StatusKind, Int)? = None,
+  accuracy? : Int = 100,
+  recoil_num? : Int = 0,
+  recoil_den? : Int = 1,
+  self_ko? : Bool = false,
+  recharge? : Bool = false,
 ) -> @model.Move {
   {
     name,
@@ -36,6 +36,9 @@ fn mk_move(
     recoil_den,
     self_ko,
     recharge,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -178,7 +181,12 @@ test "compute_mean_damage: burned special attacker unchanged" {
     actual_stats: None,
     ivs: None,
   }
-  let special_move = mk_move("かえんほうしゃ", "ほのお", @model.Special, 90)
+  let special_move = mk_move(
+    "かえんほうしゃ",
+    "ほのお",
+    @model.Special,
+    90,
+  )
   let normal = compute_mean_damage(atk, dfn, special_move, 0, 0)
   let burned = compute_mean_damage(atk, dfn, special_move, 0, 0, atk_burn=true)
   @debug.assert_eq(normal, burned)
@@ -331,10 +339,7 @@ test "reset_toxic_counter_on_switch: BadPoison(n) -> BadPoison(0)" {
     reset_toxic_counter_on_switch(@model.BadPoison(7)),
     @model.BadPoison(0),
   )
-  @debug.assert_eq(
-    reset_toxic_counter_on_switch(@model.Poison),
-    @model.Poison,
-  )
+  @debug.assert_eq(reset_toxic_counter_on_switch(@model.Poison), @model.Poison)
   @debug.assert_eq(reset_toxic_counter_on_switch(@model.None), @model.None)
 }
 
@@ -361,20 +366,38 @@ test "eot_slip_active: Drowsy(0) triggers Sleep(2) at EOT" {
 ///|
 test "eot_leftovers_heal: たべのこし adds max/16, capped at max" {
   // 80/160 → +10 → 90
-  @debug.debug_inspect(eot_leftovers_heal(80, 160, "たべのこし"), content="90")
+  @debug.debug_inspect(
+    eot_leftovers_heal(80, 160, "たべのこし"),
+    content="90",
+  )
   // 155/160 → +10 → cap at 160
-  @debug.debug_inspect(eot_leftovers_heal(155, 160, "たべのこし"), content="160")
+  @debug.debug_inspect(
+    eot_leftovers_heal(155, 160, "たべのこし"),
+    content="160",
+  )
   // already at max → no-op
-  @debug.debug_inspect(eot_leftovers_heal(160, 160, "たべのこし"), content="160")
+  @debug.debug_inspect(
+    eot_leftovers_heal(160, 160, "たべのこし"),
+    content="160",
+  )
   // fainted → no-op (たべのこし は瀕死では発動しない)
-  @debug.debug_inspect(eot_leftovers_heal(0, 160, "たべのこし"), content="0")
+  @debug.debug_inspect(
+    eot_leftovers_heal(0, 160, "たべのこし"),
+    content="0",
+  )
 }
 
 ///|
 test "eot_leftovers_heal: non-leftovers items are no-op" {
   @debug.debug_inspect(eot_leftovers_heal(80, 160, ""), content="80")
-  @debug.debug_inspect(eot_leftovers_heal(80, 160, "オボンのみ"), content="80")
-  @debug.debug_inspect(eot_leftovers_heal(80, 160, "きあいのタスキ"), content="80")
+  @debug.debug_inspect(
+    eot_leftovers_heal(80, 160, "オボンのみ"),
+    content="80",
+  )
+  @debug.debug_inspect(
+    eot_leftovers_heal(80, 160, "きあいのタスキ"),
+    content="80",
+  )
 }
 
 ///|
@@ -395,7 +418,7 @@ test "apply_eot: たべのこし heals before status slip" {
 fn mk_test_pokemon(
   name : String,
   type1 : String,
-  type2~ : String = "",
+  type2? : String = "",
 ) -> @model.Pokemon {
   {
     global_no: "0000",
@@ -445,8 +468,14 @@ fn mk_test_state(
 ) -> SwitchingGameState {
   let my_hps = Array::make(team_size, my_hp)
   let opp_hps = Array::make(team_size, opp_hp)
-  let my_st : Array[@model.StatusCondition] = Array::make(team_size, @model.None)
-  let opp_st : Array[@model.StatusCondition] = Array::make(team_size, @model.None)
+  let my_st : Array[@model.StatusCondition] = Array::make(
+    team_size,
+    @model.None,
+  )
+  let opp_st : Array[@model.StatusCondition] = Array::make(
+    team_size,
+    @model.None,
+  )
   my_st[0] = my_status
   opp_st[0] = opp_status
   {
@@ -468,6 +497,16 @@ fn mk_test_state(
     opp_item_consumed: Array::make(team_size, false),
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: Array::make(team_size, false),
+    my_protean_locked: Array::make(team_size, ""),
+    opp_leech_seeded: Array::make(team_size, false),
+    opp_protean_locked: Array::make(team_size, ""),
+    my_wish_turns: no_wish_pending(team_size),
+    opp_wish_turns: no_wish_pending(team_size),
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
 }
@@ -487,8 +526,12 @@ test "maybe_apply_status_fanout: Will-o-wisp (85% burn) fans out" {
   let state = mk_test_state(1, 100, 100, @model.None, @model.None)
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "みず"))]
   let mv = mk_move(
-    "おにび", "ほのお", @model.Status, 0,
-    accuracy=85, status_effect=Some((@model.BurnKind, 100)),
+    "おにび",
+    "ほのお",
+    @model.Status,
+    0,
+    accuracy=85,
+    status_effect=Some((@model.BurnKind, 100)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
   // chance = 100 → deterministic apply
@@ -501,8 +544,12 @@ test "maybe_apply_status_fanout: fire-type immune to burn" {
   let state = mk_test_state(1, 100, 100, @model.None, @model.None)
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "ほのお"))]
   let mv = mk_move(
-    "おにび", "ほのお", @model.Status, 0,
-    accuracy=85, status_effect=Some((@model.BurnKind, 100)),
+    "おにび",
+    "ほのお",
+    @model.Status,
+    0,
+    accuracy=85,
+    status_effect=Some((@model.BurnKind, 100)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
   @debug.assert_eq(out.length(), 1)
@@ -514,8 +561,12 @@ test "maybe_apply_status_fanout: already statused target is not re-infected" {
   let state = mk_test_state(1, 100, 100, @model.None, @model.Paralyze)
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "ノーマル"))]
   let mv = mk_move(
-    "おにび", "ほのお", @model.Status, 0,
-    accuracy=85, status_effect=Some((@model.BurnKind, 100)),
+    "おにび",
+    "ほのお",
+    @model.Status,
+    0,
+    accuracy=85,
+    status_effect=Some((@model.BurnKind, 100)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
   @debug.assert_eq(out.length(), 1)
@@ -535,7 +586,10 @@ fn run_no_overwrite_case(
   // the overwrite-guard we actually want to test.
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "ノーマル"))]
   let mv = mk_move(
-    "test", "ノーマル", @model.Status, 0,
+    "test",
+    "ノーマル",
+    @model.Status,
+    0,
     status_effect=Some((incoming, 100)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
@@ -545,23 +599,68 @@ fn run_no_overwrite_case(
 ///|
 test "already-statused guard blocks overwrite for every existing variant" {
   // Paralyze blocks Burn / Poison / BadPoison / Sleep / Drowsy
-  @debug.assert_eq(run_no_overwrite_case(@model.Paralyze, @model.BurnKind), @model.Paralyze)
-  @debug.assert_eq(run_no_overwrite_case(@model.Paralyze, @model.PoisonKind), @model.Paralyze)
-  @debug.assert_eq(run_no_overwrite_case(@model.Paralyze, @model.BadPoisonKind), @model.Paralyze)
-  @debug.assert_eq(run_no_overwrite_case(@model.Paralyze, @model.SleepKind), @model.Paralyze)
-  @debug.assert_eq(run_no_overwrite_case(@model.Paralyze, @model.DrowsyKind), @model.Paralyze)
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Paralyze, @model.BurnKind),
+    @model.Paralyze,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Paralyze, @model.PoisonKind),
+    @model.Paralyze,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Paralyze, @model.BadPoisonKind),
+    @model.Paralyze,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Paralyze, @model.SleepKind),
+    @model.Paralyze,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Paralyze, @model.DrowsyKind),
+    @model.Paralyze,
+  )
   // Burn blocks Paralyze / Poison / BadPoison / Sleep / Drowsy
-  @debug.assert_eq(run_no_overwrite_case(@model.Burn, @model.ParalyzeKind), @model.Burn)
-  @debug.assert_eq(run_no_overwrite_case(@model.Burn, @model.PoisonKind), @model.Burn)
-  @debug.assert_eq(run_no_overwrite_case(@model.Burn, @model.BadPoisonKind), @model.Burn)
-  @debug.assert_eq(run_no_overwrite_case(@model.Burn, @model.SleepKind), @model.Burn)
-  @debug.assert_eq(run_no_overwrite_case(@model.Burn, @model.DrowsyKind), @model.Burn)
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Burn, @model.ParalyzeKind),
+    @model.Burn,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Burn, @model.PoisonKind),
+    @model.Burn,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Burn, @model.BadPoisonKind),
+    @model.Burn,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Burn, @model.SleepKind),
+    @model.Burn,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Burn, @model.DrowsyKind),
+    @model.Burn,
+  )
   // Poison blocks Paralyze / Burn / BadPoison / Sleep / Drowsy
-  @debug.assert_eq(run_no_overwrite_case(@model.Poison, @model.ParalyzeKind), @model.Poison)
-  @debug.assert_eq(run_no_overwrite_case(@model.Poison, @model.BurnKind), @model.Poison)
-  @debug.assert_eq(run_no_overwrite_case(@model.Poison, @model.BadPoisonKind), @model.Poison)
-  @debug.assert_eq(run_no_overwrite_case(@model.Poison, @model.SleepKind), @model.Poison)
-  @debug.assert_eq(run_no_overwrite_case(@model.Poison, @model.DrowsyKind), @model.Poison)
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Poison, @model.ParalyzeKind),
+    @model.Poison,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Poison, @model.BurnKind),
+    @model.Poison,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Poison, @model.BadPoisonKind),
+    @model.Poison,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Poison, @model.SleepKind),
+    @model.Poison,
+  )
+  @debug.assert_eq(
+    run_no_overwrite_case(@model.Poison, @model.DrowsyKind),
+    @model.Poison,
+  )
   // BadPoison(n) blocks; counter must also be preserved, not reset.
   @debug.assert_eq(
     run_no_overwrite_case(@model.BadPoison(3), @model.BurnKind),
@@ -602,8 +701,12 @@ test "maybe_apply_status_fanout: fainted target yields no status" {
   let state = mk_test_state(1, 100, 0, @model.None, @model.None)
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "ノーマル"))]
   let mv = mk_move(
-    "おにび", "ほのお", @model.Status, 0,
-    accuracy=85, status_effect=Some((@model.BurnKind, 100)),
+    "おにび",
+    "ほのお",
+    @model.Status,
+    0,
+    accuracy=85,
+    status_effect=Some((@model.BurnKind, 100)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
   @debug.assert_eq(out.length(), 1)
@@ -615,8 +718,12 @@ test "maybe_apply_status_fanout: thunder-wave 90% fans to 2 outcomes" {
   let state = mk_test_state(1, 100, 100, @model.None, @model.None)
   let target_team = [mk_test_combatant(mk_test_pokemon("A", "ノーマル"))]
   let mv = mk_move(
-    "でんじは", "でんき", @model.Status, 0,
-    accuracy=90, status_effect=Some((@model.ParalyzeKind, 90)),
+    "でんじは",
+    "でんき",
+    @model.Status,
+    0,
+    accuracy=90,
+    status_effect=Some((@model.ParalyzeKind, 90)),
   )
   let out = maybe_apply_status_fanout(state, false, 0, target_team, mv)
   @debug.assert_eq(out.length(), 2)
@@ -664,7 +771,7 @@ fn mk_move_move(
   accuracy : Int,
   status_effect : (@model.StatusKind, Int)?,
 ) -> @model.Move {
-  mk_move(name, "ノーマル", category, power, accuracy=accuracy, status_effect=status_effect)
+  mk_move(name, "ノーマル", category, power, accuracy~, status_effect~)
 }
 
 ///|
@@ -715,6 +822,16 @@ fn mk_same_turn_state(
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
 }
@@ -729,20 +846,34 @@ test "resolve_moves: faster Will-O-Wisp halves slower target's physical damage s
   let burner = mk_stat_pokemon("burner", 200, 100, 120)
   let hitter = mk_stat_pokemon("hitter", 200, 150, 60)
   let wowisp = mk_move_move(
-    "おにび", @model.Status, 0, 100, Some((@model.BurnKind, 100)),
+    "おにび",
+    @model.Status,
+    0,
+    100,
+    Some((@model.BurnKind, 100)),
   )
   let heavy = mk_move_move("じしん", @model.Physical, 100, 100, None)
   let my_team = [mk_combatant_with_moves(burner, [wowisp])]
   let opp_team = [mk_combatant_with_moves(hitter, [heavy])]
   let normal = compute_mean_damage(opp_team[0], my_team[0], heavy, 0, 0)
   let halved = compute_mean_damage(
-    opp_team[0], my_team[0], heavy, 0, 0, atk_burn=true,
+    opp_team[0],
+    my_team[0],
+    heavy,
+    0,
+    0,
+    atk_burn=true,
   )
   // Sanity: the burn halving must be a distinguishable effect.
   assert_true(normal > halved)
   let state = mk_same_turn_state(my_team, opp_team, 200, 200)
   let outs = transition_with_cache(
-    state, UseMove(0), UseMove(0), my_team, opp_team, new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   // Deterministic: wowisp accuracy 100, burn chance 100, no speed tie.
   @debug.assert_eq(outs.length(), 1)
@@ -763,19 +894,33 @@ test "resolve_moves: slower Will-O-Wisp does NOT halve the faster attacker's dam
   let burner = mk_stat_pokemon("burner", 200, 100, 60)
   let hitter = mk_stat_pokemon("hitter", 200, 150, 120)
   let wowisp = mk_move_move(
-    "おにび", @model.Status, 0, 100, Some((@model.BurnKind, 100)),
+    "おにび",
+    @model.Status,
+    0,
+    100,
+    Some((@model.BurnKind, 100)),
   )
   let heavy = mk_move_move("じしん", @model.Physical, 100, 100, None)
   let my_team = [mk_combatant_with_moves(burner, [wowisp])]
   let opp_team = [mk_combatant_with_moves(hitter, [heavy])]
   let normal = compute_mean_damage(opp_team[0], my_team[0], heavy, 0, 0)
   let halved = compute_mean_damage(
-    opp_team[0], my_team[0], heavy, 0, 0, atk_burn=true,
+    opp_team[0],
+    my_team[0],
+    heavy,
+    0,
+    0,
+    atk_burn=true,
   )
   assert_true(normal > halved)
   let state = mk_same_turn_state(my_team, opp_team, 200, 200)
   let outs = transition_with_cache(
-    state, UseMove(0), UseMove(0), my_team, opp_team, new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   @debug.assert_eq(outs.length(), 1)
   let (_p, ns) = outs[0]
@@ -795,14 +940,23 @@ test "resolve_moves: faster Spore locks slower target out of the same turn" {
   let sleeper = mk_stat_pokemon("sleeper", 200, 100, 120)
   let hitter = mk_stat_pokemon("hitter", 200, 150, 60)
   let spore = mk_move_move(
-    "キノコのほうし", @model.Status, 0, 100, Some((@model.SleepKind, 100)),
+    "キノコのほうし",
+    @model.Status,
+    0,
+    100,
+    Some((@model.SleepKind, 100)),
   )
   let heavy = mk_move_move("じしん", @model.Physical, 100, 100, None)
   let my_team = [mk_combatant_with_moves(sleeper, [spore])]
   let opp_team = [mk_combatant_with_moves(hitter, [heavy])]
   let state = mk_same_turn_state(my_team, opp_team, 200, 200)
   let outs = transition_with_cache(
-    state, UseMove(0), UseMove(0), my_team, opp_team, new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   @debug.assert_eq(outs.length(), 1)
   let (_p, ns) = outs[0]
@@ -823,7 +977,11 @@ test "resolve_moves: faster Thunder Wave still lets slower target attack this tu
   let twaver = mk_stat_pokemon("twaver", 200, 100, 120)
   let hitter = mk_stat_pokemon("hitter", 200, 150, 60)
   let twave = mk_move_move(
-    "でんじは", @model.Status, 0, 100, Some((@model.ParalyzeKind, 100)),
+    "でんじは",
+    @model.Status,
+    0,
+    100,
+    Some((@model.ParalyzeKind, 100)),
   )
   let heavy = mk_move_move("じしん", @model.Physical, 100, 100, None)
   let my_team = [mk_combatant_with_moves(twaver, [twave])]
@@ -831,7 +989,12 @@ test "resolve_moves: faster Thunder Wave still lets slower target attack this tu
   let normal = compute_mean_damage(opp_team[0], my_team[0], heavy, 0, 0)
   let state = mk_same_turn_state(my_team, opp_team, 200, 200)
   let outs = transition_with_cache(
-    state, UseMove(0), UseMove(0), my_team, opp_team, new_damage_cache(),
+    state,
+    UseMove(0),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   @debug.assert_eq(outs.length(), 1)
   let (_p, ns) = outs[0]
@@ -847,7 +1010,16 @@ test "resolve_moves: faster Thunder Wave still lets slower target attack this tu
 test "apply_recoil: 1/2 ratio subtracts half of damage dealt" {
   let hps = [200]
   apply_recoil(
-    hps, 0, mk_move("head_smash", "いわ", @model.Physical, 150, recoil_num=1, recoil_den=2),
+    hps,
+    0,
+    mk_move(
+      "head_smash",
+      "いわ",
+      @model.Physical,
+      150,
+      recoil_num=1,
+      recoil_den=2,
+    ),
     100,
   )
   // 100 * 1 / 2 = 50 (above the 1-HP minimum, so used as-is).
@@ -859,7 +1031,16 @@ test "apply_recoil: guaranteed minimum 1 HP when raw recoil rounds to 0" {
   let hps = [200]
   // 3 * 1 / 4 = 0, clamped up to 1.
   apply_recoil(
-    hps, 0, mk_move("wild_charge", "でんき", @model.Physical, 90, recoil_num=1, recoil_den=4),
+    hps,
+    0,
+    mk_move(
+      "wild_charge",
+      "でんき",
+      @model.Physical,
+      90,
+      recoil_num=1,
+      recoil_den=4,
+    ),
     3,
   )
   @debug.assert_eq(hps[0], 199)
@@ -869,7 +1050,16 @@ test "apply_recoil: guaranteed minimum 1 HP when raw recoil rounds to 0" {
 test "apply_recoil: no loss when damage is zero (type-immune hit)" {
   let hps = [200]
   apply_recoil(
-    hps, 0, mk_move("morohanozutsuki", "いわ", @model.Physical, 150, recoil_num=1, recoil_den=2),
+    hps,
+    0,
+    mk_move(
+      "morohanozutsuki",
+      "いわ",
+      @model.Physical,
+      150,
+      recoil_num=1,
+      recoil_den=2,
+    ),
     0,
   )
   @debug.assert_eq(hps[0], 200)
@@ -878,7 +1068,12 @@ test "apply_recoil: no loss when damage is zero (type-immune hit)" {
 ///|
 test "apply_recoil: no-op for non-recoil move regardless of damage" {
   let hps = [200]
-  apply_recoil(hps, 0, mk_move("tackle", "ノーマル", @model.Physical, 40), 100)
+  apply_recoil(
+    hps,
+    0,
+    mk_move("tackle", "ノーマル", @model.Physical, 40),
+    100,
+  )
   @debug.assert_eq(hps[0], 200)
 }
 
@@ -886,7 +1081,16 @@ test "apply_recoil: no-op for non-recoil move regardless of damage" {
 test "apply_recoil: HP clamps at 0 on overkill recoil" {
   let hps = [10]
   apply_recoil(
-    hps, 0, mk_move("big_recoil", "いわ", @model.Physical, 150, recoil_num=1, recoil_den=1),
+    hps,
+    0,
+    mk_move(
+      "big_recoil",
+      "いわ",
+      @model.Physical,
+      150,
+      recoil_num=1,
+      recoil_den=1,
+    ),
     9999,
   )
   @debug.assert_eq(hps[0], 0)
@@ -910,6 +1114,7 @@ test "resolve_post_hit_effects: self_ko zeroes attacker HP even on 0-damage hit"
 }
 
 ///|
+
 ///|
 /// Phase 3 unit: `apply_stat_effects` routes each entry by `target` and
 /// gates opponent-target drops when the defender is already fainted.
@@ -917,13 +1122,10 @@ test "apply_stat_effects: target=0 routes to self_ranks, target=1 to opp_ranks" 
   let self_ranks = [0, 0, 0, 0, 0]
   let opp_ranks = [0, 0, 0, 0, 0]
   // Mixed: self +2 Atk (self_boost) and opp -2 Atk (Amaeru-shaped).
-  let mv = mk_move(
-    "mix", "ノーマル", @model.Status, 0,
-    stat_effects=[
-      @model.StatEffect::{ stat: 0, delta: 2, target: 0 },
-      @model.StatEffect::{ stat: 0, delta: -2, target: 1 },
-    ],
-  )
+  let mv = mk_move("mix", "ノーマル", @model.Status, 0, stat_effects=[
+    @model.StatEffect::{ stat: 0, delta: 2, target: 0 },
+    @model.StatEffect::{ stat: 0, delta: -2, target: 1 },
+  ])
   apply_stat_effects(self_ranks, opp_ranks, true, mv)
   @debug.assert_eq(self_ranks[0], 2)
   @debug.assert_eq(opp_ranks[0], -2)
@@ -933,10 +1135,9 @@ test "apply_stat_effects: target=0 routes to self_ranks, target=1 to opp_ranks" 
 test "apply_stat_effects: opp-target entries skipped when opp_alive=false" {
   let self_ranks = [0, 0, 0, 0, 0]
   let opp_ranks = [0, 0, 0, 0, 0]
-  let mv = mk_move(
-    "amaeru", "フェアリー", @model.Status, 0,
-    stat_effects=[@model.StatEffect::{ stat: 0, delta: -2, target: 1 }],
-  )
+  let mv = mk_move("amaeru", "フェアリー", @model.Status, 0, stat_effects=[
+    @model.StatEffect::{ stat: 0, delta: -2, target: 1 },
+  ])
   apply_stat_effects(self_ranks, opp_ranks, false, mv)
   @debug.assert_eq(opp_ranks[0], 0)
 }
@@ -945,13 +1146,10 @@ test "apply_stat_effects: opp-target entries skipped when opp_alive=false" {
 test "apply_stat_effects: multi-stat opp-target (Namidame) drops both Atk and SpA" {
   let self_ranks = [0, 0, 0, 0, 0]
   let opp_ranks = [0, 0, 0, 0, 0]
-  let mv = mk_move(
-    "namidame", "ノーマル", @model.Status, 0,
-    stat_effects=[
-      @model.StatEffect::{ stat: 0, delta: -1, target: 1 },
-      @model.StatEffect::{ stat: 2, delta: -1, target: 1 },
-    ],
-  )
+  let mv = mk_move("namidame", "ノーマル", @model.Status, 0, stat_effects=[
+    @model.StatEffect::{ stat: 0, delta: -1, target: 1 },
+    @model.StatEffect::{ stat: 2, delta: -1, target: 1 },
+  ])
   apply_stat_effects(self_ranks, opp_ranks, true, mv)
   @debug.assert_eq(opp_ranks[0], -1)
   @debug.assert_eq(opp_ranks[2], -1)
@@ -965,10 +1163,9 @@ test "apply_stat_effects: multi-stat opp-target (Namidame) drops both Atk and Sp
 test "apply_stat_effects: self-only setup move (つるぎのまい) leaves opp untouched" {
   let self_ranks = [0, 0, 0, 0, 0]
   let opp_ranks = [0, 0, 0, 0, 0]
-  let mv = mk_move(
-    "sworddance", "ノーマル", @model.Status, 0,
-    stat_effects=[@model.StatEffect::{ stat: 0, delta: 2, target: 0 }],
-  )
+  let mv = mk_move("sworddance", "ノーマル", @model.Status, 0, stat_effects=[
+    @model.StatEffect::{ stat: 0, delta: 2, target: 0 },
+  ])
   apply_stat_effects(self_ranks, opp_ranks, true, mv)
   @debug.assert_eq(self_ranks[0], 2)
   @debug.assert_eq(opp_ranks[0], 0)
@@ -978,7 +1175,13 @@ test "apply_stat_effects: self-only setup move (つるぎのまい) leaves opp u
 test "resolve_post_hit_effects: recharge sets flag only when attacker survives" {
   let def_hps = [200]
   let def_ranks = [0, 0, 0, 0, 0]
-  let mv = mk_move("hyper_beam", "ノーマル", @model.Special, 150, recharge=true)
+  let mv = mk_move(
+    "hyper_beam",
+    "ノーマル",
+    @model.Special,
+    150,
+    recharge=true,
+  )
   // Surviving attacker: recharge flag should be set.
   let hps_alive = [100]
   let ranks_alive = [0, 0, 0, 0, 0]
@@ -1076,14 +1279,12 @@ test "attempt_turn_with_cache: forced switch after recharger faints to EOT" {
   // after firing Hyper Beam reduces HP to 0 (clamp_zero) on the same turn
   // that the recharge flag gets set. Faster than the opponent to avoid a
   // speed-tie fan-out that would inflate `outs1.length()` past 1.
-  let a_with_hb = mk_combatant_with_moves(
-    mk_stat_pokemon("A", 200, 100, 120),
-    [mk_move("hb", "ノーマル", @model.Special, 150, recharge=true)],
-  )
-  let b_with_mv = mk_combatant_with_moves(
-    mk_stat_pokemon("B", 200, 100, 100),
-    [mk_move("tackle", "ノーマル", @model.Physical, 40)],
-  )
+  let a_with_hb = mk_combatant_with_moves(mk_stat_pokemon("A", 200, 100, 120), [
+    mk_move("hb", "ノーマル", @model.Special, 150, recharge=true),
+  ])
+  let b_with_mv = mk_combatant_with_moves(mk_stat_pokemon("B", 200, 100, 100), [
+    mk_move("tackle", "ノーマル", @model.Physical, 40),
+  ])
   let opp_with_idle = mk_combatant_with_moves(
     mk_stat_pokemon("Z", 300, 100, 60),
     [mk_move("idle", "ノーマル", @model.Status, 0)],
@@ -1111,10 +1312,25 @@ test "attempt_turn_with_cache: forced switch after recharger faints to EOT" {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false, false],
+    my_protean_locked: ["", ""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
   let outs1 = attempt_turn_with_cache(
-    s0, UseMove(0), UseMove(0), my_team, opp_team, new_damage_cache(),
+    s0,
+    UseMove(0),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   @debug.assert_eq(outs1.length(), 1)
   let (_, s1) = outs1[0]
@@ -1124,7 +1340,10 @@ test "attempt_turn_with_cache: forced switch after recharger faints to EOT" {
   @debug.assert_eq(s1.my_must_recharge[0], true)
   // alive_actions must now enumerate a forced Switch to slot 1.
   let forced = alive_actions(
-    s1.my_active, s1.my_hps, my_team, s1.my_mega_used,
+    s1.my_active,
+    s1.my_hps,
+    my_team,
+    s1.my_mega_used,
     must_recharge=s1.my_must_recharge[s1.my_active],
   )
   @debug.assert_eq(forced.length(), 1)
@@ -1136,7 +1355,12 @@ test "attempt_turn_with_cache: forced switch after recharger faints to EOT" {
   // recharge flag is still set. Previously this was short-circuited to a
   // no-op, leaving the side with a dead active and no legal follow-up.
   let outs2 = attempt_turn_with_cache(
-    s1, Switch(1), UseMove(0), my_team, opp_team, new_damage_cache(),
+    s1,
+    Switch(1),
+    UseMove(0),
+    my_team,
+    opp_team,
+    new_damage_cache(),
   )
   @debug.assert_eq(outs2.length(), 1)
   let (_, s2) = outs2[0]

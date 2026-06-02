@@ -12,7 +12,10 @@
 /// 副作用を含むので、HP / 状態の確率分布を per-variant でフィルタして検証する。
 
 ///|
-fn advf_pokemon(name : String, type1~ : String = "ノーマル") -> @model.Pokemon {
+fn advf_pokemon(
+  name : String,
+  type1? : String = "ノーマル",
+) -> @model.Pokemon {
   {
     global_no: "0000",
     name_ja: name,
@@ -37,10 +40,10 @@ fn advf_pokemon(name : String, type1~ : String = "ノーマル") -> @model.Pokem
 ///|
 fn advf_move(
   name : String,
-  power~ : Int = 25,
-  accuracy~ : Int = 100,
-  status_effect~ : (@model.StatusKind, Int)? = None,
-  type_~ : String = "ノーマル",
+  power? : Int = 25,
+  accuracy? : Int = 100,
+  status_effect? : (@model.StatusKind, Int)? = None,
+  type_? : String = "ノーマル",
 ) -> @model.Move {
   {
     name,
@@ -57,6 +60,9 @@ fn advf_move(
     recoil_den: 1,
     self_ko: false,
     recharge: false,
+    healing: None,
+    weather_set: None,
+    field_set: None,
   }
 }
 
@@ -64,7 +70,7 @@ fn advf_move(
 fn advf_combatant(
   name : String,
   mv : @model.Move,
-  ability~ : String = "",
+  ability? : String = "",
 ) -> Combatant {
   {
     pokemon: advf_pokemon(name),
@@ -102,6 +108,16 @@ fn advf_state(my_hp : Int, opp_hp : Int) -> SwitchingGameState {
     opp_item_consumed: [false],
     my_moves_used: [],
     opp_moves_used: [],
+    weather: @model.Weather::None,
+    weather_turns_left: 0,
+    my_leech_seeded: [false],
+    my_protean_locked: [""],
+    opp_leech_seeded: [false],
+    opp_protean_locked: [""],
+    my_wish_turns: -1,
+    opp_wish_turns: -1,
+    field: @model.Field::None,
+    field_turns_left: 0,
     turn: 0,
   }
 }
@@ -279,12 +295,20 @@ test "Phase 2-D-5: post-hit fanout 副作用が variant 間で独立 (per-hit se
     // dummy: probe 用、test 内で hits=1 leaf の HP を取得
     let probe = leaves[0].1.opp_hps[0]
     let probe2 = leaves[1].1.opp_hps[0]
-    if probe > probe2 { probe } else { probe2 }
+    if probe > probe2 {
+      probe
+    } else {
+      probe2
+    }
   }
   let hp_hits3 = {
     let probe = leaves[4].1.opp_hps[0]
     let probe2 = leaves[5].1.opp_hps[0]
-    if probe < probe2 { probe } else { probe2 }
+    if probe < probe2 {
+      probe
+    } else {
+      probe2
+    }
   }
   let mut p_para_hits1_total = 0.0
   let mut p_var_hits1_total = 0.0

@@ -41,15 +41,54 @@ pub fn seeded_rng(seed : UInt64) -> @random.Rand {
 pub fn pick_best_move(
   atk : Combatant,
   dfn : Combatant,
-  atk_ranks~ : Array[Int] = [0, 0, 0, 0, 0],
-  def_ranks~ : Array[Int] = [0, 0, 0, 0, 0],
+  atk_ranks? : Array[Int] = [0, 0, 0, 0, 0],
+  def_ranks? : Array[Int] = [0, 0, 0, 0, 0],
+  weather? : @model.Weather = @model.Weather::None,
+  field? : @model.Field = @model.Field::None,
+  atk_protean_locked? : String = "",
+  def_protean_locked? : String = "",
 ) -> Int? {
+  // Stage 7 (Protean / Libero MC parity): greedy 選択も `best_expected_damage` /
+  // `team_perform_attack` と同じ Protean override を見る。ロック中の Protean 個体は
+  // ロックタイプ技だけが STAB を保つので、ロックタイプ技を選ぶ greedy が
+  // 実ダメージと一致する。MC は mega 未モデルなので is_mega=false 固定で
+  // `effective_combatant` を再利用 (SSoT)。"" のときは override 無しで bit-exact。
+  let atk_eff = effective_combatant(
+    atk,
+    false,
+    protean_locked=atk_protean_locked,
+  )
+  let dfn_eff = effective_combatant(
+    dfn,
+    false,
+    protean_locked=def_protean_locked,
+  )
+  let atk_consumed = atk_protean_locked != ""
   let mut best_idx = -1
   let mut best_avg = 0.0
   for i in 0..<atk.moves.length() {
     let mv = atk.moves[i]
     if mv.power <= 0 {
       continue
+    }
+    // Psychic Terrain priority block (DP/MC parity): grounded defender 下で
+    // priority>0 は no-effect になるので greedy 選択から除外する。判定は
+    // `mc_psychic_priority_blocked` (team_monte_carlo.mbt) と同 semantics を
+    // インライン化 (cross-file 依存を避けるため、ここでは `@damage.is_grounded`
+    // を直接呼ぶ)。
+    if mv.priority > 0 {
+      match field {
+        @model.Field::Psychic =>
+          if @damage.is_grounded(
+              type1=dfn.pokemon.type1,
+              type2=dfn.pokemon.type2,
+              ability=dfn.ability,
+              item=dfn.item,
+            ) {
+            continue
+          }
+        _ => ()
+      }
     }
     let ar = match mv.category {
       @model.Physical => atk_ranks[0]
@@ -62,7 +101,16 @@ pub fn pick_best_move(
       @model.Status => 0
     }
     let r = @damage.calc_damage(
-      build_input_with_ranks(atk, dfn, mv, ar, dr),
+      build_input_with_ranks(
+        atk_eff,
+        dfn_eff,
+        mv,
+        ar,
+        dr,
+        weather~,
+        field~,
+        protean_consumed=atk_consumed,
+      ),
     )
     let avg = avg_damage(r)
     if avg > best_avg {
@@ -89,8 +137,10 @@ pub fn rollout_pick_move(
   dfn : Combatant,
   rng : @random.Rand,
   epsilon : Double,
-  atk_ranks~ : Array[Int] = [0, 0, 0, 0, 0],
-  def_ranks~ : Array[Int] = [0, 0, 0, 0, 0],
+  atk_ranks? : Array[Int] = [0, 0, 0, 0, 0],
+  def_ranks? : Array[Int] = [0, 0, 0, 0, 0],
+  weather? : @model.Weather = @model.Weather::None,
+  field? : @model.Field = @model.Field::None,
 ) -> Int? {
   let n = atk.moves.length()
   if n == 0 {
@@ -102,7 +152,7 @@ pub fn rollout_pick_move(
   if draw < epsilon {
     return Some(rng.int(limit=n))
   }
-  match pick_best_move(atk, dfn, atk_ranks~, def_ranks~) {
+  match pick_best_move(atk, dfn, atk_ranks~, def_ranks~, weather~, field~) {
     Some(idx) => Some(idx)
     None =>
       // Fallback: no damaging moves, but status moves exist — pick a random
@@ -110,4 +160,3 @@ pub fn rollout_pick_move(
       Some(rng.int(limit=n))
   }
 }
-

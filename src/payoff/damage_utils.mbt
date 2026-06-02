@@ -72,7 +72,8 @@ fn effective_hp(c : Combatant) -> Int {
     Some(arr) => arr[0]
     None =>
       match c.stat_system {
-        @model.Champions => @damage.calc_stat_champions(c.pokemon.hp, is_hp=true)
+        @model.Champions =>
+          @damage.calc_stat_champions(c.pokemon.hp, is_hp=true)
         @model.Standard => @damage.calc_stat(c.pokemon.hp, is_hp=true)
       }
   }
@@ -97,37 +98,35 @@ fn attack_defense_stat_indices(mv : @model.Move) -> (Int, Int) {
   let is_psyshock_family = name == "サイコショック" ||
     name == "サイコブレイク" ||
     name == "しんぴのつるぎ"
-  let atk_idx = if is_body_press {
-    2
-  } else if is_physical {
-    1
-  } else {
-    3
-  }
-  let def_idx = if is_psyshock_family {
-    2
-  } else if is_physical {
-    2
-  } else {
-    4
-  }
+  let atk_idx = if is_body_press { 2 } else if is_physical { 1 } else { 3 }
+  let def_idx = if is_psyshock_family { 2 } else if is_physical { 2 } else { 4 }
   (atk_idx, def_idx)
 }
 
 ///|
 /// Build a `DamageCalcInput` with the combatants' abilities/items/tera, the
-/// given attacker/defender ranks, and no weather/field. Used as the canonical
-/// reference input for payoff computation.
+/// given attacker/defender ranks, and the supplied weather and field.
+/// Used as the canonical reference input for payoff computation.
 ///
 /// Combatant が `nature` / `actual_stats` を保持しているとき、対応する
 /// engine フィールドへ流し込む。欠損時は engine の legacy default
 /// (攻撃側 max SP+性格 / 防御側 無投資) にフォールバックする。
+///
+/// `weather~` default is `Weather::None` so the ~13 existing fixtures and
+/// the 1078-test baseline stay green without per-call churn while callers
+/// are migrated to thread `state.weather` through the cache layer.
+/// Stage F-3: `field~` mirrors `weather~` — default `Field::None` so the
+/// pre-Stage-F fixtures stay green; production callers thread
+/// `state.field` through the cache layer.
 fn build_input_with_ranks(
   atk : Combatant,
   dfn : Combatant,
   mv : @model.Move,
   atk_rank : Int,
   def_rank : Int,
+  weather? : @model.Weather = @model.Weather::None,
+  field? : @model.Field = @model.Field::None,
+  protean_consumed? : Bool = false,
 ) -> @model.DamageCalcInput {
   let (atk_idx, def_idx) = attack_defense_stat_indices(mv)
   let atk_stat_override = match atk.actual_stats {
@@ -150,8 +149,8 @@ fn build_input_with_ranks(
     def_ability: dfn.ability,
     atk_item: atk.item,
     def_item: dfn.item,
-    weather: @model.Weather::None,
-    field: @model.Field::None,
+    weather,
+    field,
     tera_type: atk.tera_type,
     critical: false,
     atk_nature: atk.nature,
@@ -175,6 +174,12 @@ fn build_input_with_ranks(
     def_item_removable: false,
     multi_hit_mode: @model.MultiHit::Auto,
     disguise_active: false,
+    // Protean/Libero ロック中 (`protean_consumed=true`) は attacker の type1 が
+    // ロックタイプへ override 済み (effective_combatant)。engine の通常 STAB 経路が
+    // 「ロックタイプ一致技に STAB」「ロックタイプで被弾」を担うため、engine 側の
+    // Protean gate (二重 push) は止める。未ロック (false) なら発動技に engine が
+    // STAB を push する (出てきて最初の攻撃挙動 = CLI 既定と一致)。
+    protean_consumed,
     incoming: None,
   }
 }

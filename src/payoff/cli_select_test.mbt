@@ -29,8 +29,7 @@ fn select_input_json(
   format : String,
 ) -> String {
   select_input_json_with_extra(
-    team_speeds, opp_speeds, format,
-    ",\"team_payoff_model\":\"switching_game:1\"",
+    team_speeds, opp_speeds, format, ",\"team_payoff_model\":\"switching_game:1\"",
   )
 }
 
@@ -61,8 +60,7 @@ test "select_6v6_single_outputs_3pick_distribution" {
   let opp_sp = [100, 100, 100, 100, 100, 100]
   let out = run_select(
     select_input_json_with_extra(
-      team_sp, opp_sp, "single",
-      ",\"team_payoff_model\":\"switching_game:1\"",
+      team_sp, opp_sp, "single", ",\"team_payoff_model\":\"switching_game:1\"",
     ),
   )
   let j = @json.parse(out)
@@ -114,8 +112,7 @@ test "select_favours_faster_side_in_speed_asymmetric_lineup" {
   let opp_sp = [50, 50, 50, 50, 50, 50]
   let out = run_select(
     select_input_json_with_extra(
-      team_sp, opp_sp, "single",
-      ",\"team_payoff_model\":\"switching_game:2\"",
+      team_sp, opp_sp, "single", ",\"team_payoff_model\":\"switching_game:2\"",
     ),
   )
   let j = @json.parse(out)
@@ -194,10 +191,12 @@ test "select_markdown_report_written_to_box_teams" {
   let team_sp = [100, 100, 100, 100, 100, 100]
   let opp_sp = [100, 100, 100, 100, 100, 100]
   let team = parse_team_array(
-    @json.parse(build_team_json(6, "T", team_sp)), "team",
+    @json.parse(build_team_json(6, "T", team_sp)),
+    "team",
   )
   let opp = parse_team_array(
-    @json.parse(build_team_json(6, "O", opp_sp)), "opponent",
+    @json.parse(build_team_json(6, "O", opp_sp)),
+    "opponent",
   )
   let r = compute_select_with_team_model(team, opp, Single, SwitchingGame(1))
   let md = render_select_markdown(r)
@@ -211,10 +210,7 @@ test "run_select_json_rejects_malformed_team_payoff_model" {
   let team_sp = [100, 100, 100, 100, 100, 100]
   let opp_sp = [100, 100, 100, 100, 100, 100]
   let input = select_input_json_with_extra(
-    team_sp,
-    opp_sp,
-    "single",
-    ",\"team_payoff_model\":\"unknown:bad\"",
+    team_sp, opp_sp, "single", ",\"team_payoff_model\":\"unknown:bad\"",
   )
   let errored = try {
     let _ = run_select(input)
@@ -315,6 +311,161 @@ test "parse_move_json_3elem_stat_effects_and_posthit_fields" {
   // Hyper Beam
   @debug.assert_eq(parsed[3].moves[0].recharge, true)
   @debug.assert_eq(parsed[3].moves[0].self_ko, false)
+}
+
+///|
+/// Stage E: `field_set` JSON フィールドが weather_set と同じ pattern で
+/// `@db.parse_field_set` 経由でパースされ、`Move.field_set` を埋める。
+/// 4 種類 (electric / grassy / misty / psychic) を pin。値が無い move は
+/// `field_set: None`。Stage C で残った cli_select.mbt の open item を解消する。
+test "parse_move_json_reads_field_set" {
+  let raw =
+    #|{
+    #|  "team": [
+    #|    {"name":"A","type1":"でんき","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"エレキフィールド","type":"でんき","category":"変化","power":0,"field_set":"electric"}]},
+    #|    {"name":"B","type1":"くさ","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"グラスフィールド","type":"くさ","category":"変化","power":0,"field_set":"grassy"}]},
+    #|    {"name":"C","type1":"フェアリー","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"ミストフィールド","type":"フェアリー","category":"変化","power":0,"field_set":"misty"}]},
+    #|    {"name":"D","type1":"エスパー","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"サイコフィールド","type":"エスパー","category":"変化","power":0,"field_set":"psychic"},
+    #|              {"name":"じしん","type":"じめん","category":"物理","power":100}]}
+    #|  ]
+    #|}
+  let parsed = match @json.parse(raw) {
+    Object(m) =>
+      match m.get("team") {
+        Some(t) => parse_team_array(t, "team")
+        _ => {
+          assert_true(false)
+          return
+        }
+      }
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  // 4 種 × field_set を pin。
+  @debug.assert_eq(parsed[0].moves[0].field_set, Some(@model.Field::Electric))
+  @debug.assert_eq(parsed[1].moves[0].field_set, Some(@model.Field::Grassy))
+  @debug.assert_eq(parsed[2].moves[0].field_set, Some(@model.Field::Misty))
+  @debug.assert_eq(parsed[3].moves[0].field_set, Some(@model.Field::Psychic))
+  // field_set を持たない通常技は None。
+  @debug.assert_eq(parsed[3].moves[1].field_set, None)
+}
+
+///|
+/// `heal_kind` が present でも正準値 (fixed / weather / drain / rest /
+/// leech_seed / pain_split / wish) でない場合は `InvalidJson` で弾く。回復技を
+/// 黙って非回復として扱うと payoff 行列が静かに変質し、利用者は回復を入れた
+/// つもりで非回復の数値を受け取ってしまうため (PR #143 review)。`fixed_fraction`
+/// は正準値 `fixed` の表記ゆれを模した未知値。
+test "parse_move_json_rejects_unknown_heal_kind" {
+  let raw =
+    #|{
+    #|  "team": [
+    #|    {"name":"A","type1":"ノーマル","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"じこさいせい","type":"ノーマル","category":"変化","power":0,"heal_kind":"fixed_fraction","heal_num":1,"heal_den":2}]}
+    #|  ]
+    #|}
+  let team_json = match @json.parse(raw) {
+    Object(m) =>
+      match m.get("team") {
+        Some(t) => t
+        None => {
+          assert_true(false)
+          return
+        }
+      }
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let msg = try {
+    let _ = parse_team_array(team_json, "team")
+    ""
+  } catch {
+    InvalidJson(msg) => msg
+    e => @debug.to_string(e)
+  }
+  assert_true(msg.contains("unknown healing kind"))
+  assert_true(msg.contains("fixed_fraction"))
+}
+
+///|
+/// `parse_move_json` の `weather_set` も `heal_kind` と同じく fail-fast にする
+/// (PR #143 AI Rally suggestion)。canonical 値 `sun` / `rain` / `sand` / `snow` 以外を
+/// 受けたら payoff 行列が静かに変質するため、`InvalidJson` で弾く。
+test "parse_move_json_rejects_unknown_weather_set" {
+  let raw =
+    #|{
+    #|  "team": [
+    #|    {"name":"A","type1":"ノーマル","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"にほんばれ","type":"ほのお","category":"変化","power":0,"weather_set":"sunny"}]}
+    #|  ]
+    #|}
+  let team_json = match @json.parse(raw) {
+    Object(m) =>
+      match m.get("team") {
+        Some(t) => t
+        None => {
+          assert_true(false)
+          return
+        }
+      }
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let msg = try {
+    let _ = parse_team_array(team_json, "team")
+    ""
+  } catch {
+    InvalidJson(msg) => msg
+    e => @debug.to_string(e)
+  }
+  assert_true(msg.contains("unknown weather"))
+  assert_true(msg.contains("sunny"))
+}
+
+///|
+/// `parse_move_json` の `field_set` も同じ fail-fast policy。canonical 値
+/// `electric` / `grassy` / `misty` / `psychic` 以外を受けたら `InvalidJson` で弾く。
+test "parse_move_json_rejects_unknown_field_set" {
+  let raw =
+    #|{
+    #|  "team": [
+    #|    {"name":"A","type1":"ノーマル","type2":"","hp":100,"atk":100,"def":100,"spa":100,"spd":100,"spe":100,
+    #|     "moves":[{"name":"エレキフィールド","type":"でんき","category":"変化","power":0,"field_set":"electric_terrain"}]}
+    #|  ]
+    #|}
+  let team_json = match @json.parse(raw) {
+    Object(m) =>
+      match m.get("team") {
+        Some(t) => t
+        None => {
+          assert_true(false)
+          return
+        }
+      }
+    _ => {
+      assert_true(false)
+      return
+    }
+  }
+  let msg = try {
+    let _ = parse_team_array(team_json, "team")
+    ""
+  } catch {
+    InvalidJson(msg) => msg
+    e => @debug.to_string(e)
+  }
+  assert_true(msg.contains("unknown field"))
+  assert_true(msg.contains("electric_terrain"))
 }
 
 ///|
@@ -428,19 +579,104 @@ test "run_select_rejects_team_size_other_than_six" {
 ///|
 test "select_accepts_team_builder_member_format" {
   let mk = fn(name : String, speed : Int) -> String {
-    "{\"name\":\"" + name + "\",\"types\":[\"ノーマル\"],\"base_stats\":{\"h\":100,\"a\":100,\"b\":80,\"c\":80,\"d\":80,\"s\":" + speed.to_string() + "},\"ability\":\"\",\"item\":\"\",\"role\":\"軸\",\"moves\":[{\"name\":\"のしかかり\",\"type\":\"ノーマル\",\"category\":\"物理\",\"power\":85}]}"
+    "{\"name\":\"" +
+    name +
+    "\",\"types\":[\"ノーマル\"],\"base_stats\":{\"h\":100,\"a\":100,\"b\":80,\"c\":80,\"d\":80,\"s\":" +
+    speed.to_string() +
+    "},\"ability\":\"\",\"item\":\"\",\"role\":\"軸\",\"moves\":[{\"name\":\"のしかかり\",\"type\":\"ノーマル\",\"category\":\"物理\",\"power\":85}]}"
   }
-  let team = "[" + mk("T0", 100) + "," + mk("T1", 95) + "," + mk("T2", 105) + "," + mk("T3", 90) + "," + mk("T4", 110) + "," + mk("T5", 85) + "]"
-  let input = "{\"team\":" + team + ",\"opponent\":" + team + ",\"format\":\"single\",\"team_payoff_model\":\"switching_game:1\"}"
+  let team = "[" +
+    mk("T0", 100) +
+    "," +
+    mk("T1", 95) +
+    "," +
+    mk("T2", 105) +
+    "," +
+    mk("T3", 90) +
+    "," +
+    mk("T4", 110) +
+    "," +
+    mk("T5", 85) +
+    "]"
+  let input = "{\"team\":" +
+    team +
+    ",\"opponent\":" +
+    team +
+    ",\"format\":\"single\",\"team_payoff_model\":\"switching_game:1\"}"
   let out = run_select(input)
   let j = @json.parse(out)
   match j {
-    Object(m) => {
+    Object(m) =>
       match m.get("row_strategy") {
         Some(Array(arr)) => assert_true(arr.length() == 60)
         _ => assert_true(false)
       }
-    }
     _ => assert_true(false)
+  }
+}
+
+///|
+/// Stage 4 e2e regression: the same 6v6 turn_limit=3 team input that caused
+/// `bin/pkdx select` to raise `SimplexFailure(IterationLimit)` on PR #143
+/// smoke testing must now return a successful Nash result via the fallback
+/// chain. Asserts that `nash_solver` is one of the known solver tags, that
+/// exploitability stays under the configured default tolerance (0.05), that
+/// the selections matrix has the expected 60 = C(6,3) * lead-order shape,
+/// and that the recursive DP path did not silently degrade
+/// (`silent_dp_fallback_count` baseline = 0 — i.e. the scope-out claim
+/// "internal DP callsites are unaffected by the cli_select fallback" holds
+/// for this fixture).
+test "e2e: 6v6 turn_limit=3 degenerate fixture triggers Nash fallback" {
+  // Baseline reset so other tests that may have incremented this counter
+  // earlier in the same run do not pollute the assertion below.
+  silent_dp_fallback_count.val = 0
+  let input_json = match
+    @db.read_file("tests/fixtures/nash_select_input_6v6_t3.json") {
+    Some(s) => s
+    None => {
+      fail("missing tests/fixtures/nash_select_input_6v6_t3.json")
+      return
+    }
+  }
+  let output_json = run_select(input_json)
+  let output = @json.parse(output_json)
+  match output {
+    Object(obj) => {
+      // (a) success exit is implicit — run_select did not raise.
+      // (b) nash_solver field is one of the known solver tags.
+      let solver = match obj.get("nash_solver") {
+        Some(String(s)) => s
+        _ => {
+          fail("nash_solver field missing or not a string")
+          return
+        }
+      }
+      assert_true(
+        solver == "fictitious_play" || solver == "mwu" || solver == "simplex",
+      )
+      // (c) exploitability under the default tolerance (0.05). Add a small
+      // numerical slack for the upper bound to absorb fp rounding around
+      // the acceptance check inside the fallback chain.
+      let expl = match obj.get("exploitability") {
+        Some(Number(n, ..)) => n
+        _ => {
+          fail("exploitability field missing or not a number")
+          return
+        }
+      }
+      assert_true(expl <= 0.05 + 1.0e-9)
+      // (d) selections shape: 6v6 with `switching_game:3` yields
+      // C(6, 3) * 3 leads = 20 * 3 = 60 selections per side.
+      match obj.get("selections") {
+        Some(Array(arr)) => assert_eq(arr.length(), 60)
+        _ => fail("selections field missing or not an array")
+      }
+      // (e) silent_dp_fallback_count == 0 baseline assert: the internal DP
+      // path's silent-degrade branch was never exercised for this fixture,
+      // so the scope-out (cli_select fallback does not depend on DP-level
+      // silent fallback) is empirically valid.
+      inspect(silent_dp_fallback_count.val, content="0")
+    }
+    _ => fail("output is not a JSON object")
   }
 }
